@@ -18,10 +18,7 @@ pub async fn ensure_oss_ready(config: &Config) -> std::io::Result<()> {
 
     match lmstudio_client.fetch_models().await {
         Ok(models) => {
-            // Print here
-            tracing::info!("Available models in LM Studio: {:?}", models);
             if !models.iter().any(|m| m == DEFAULT_OSS_MODEL) {
-                tracing::info!("Model '{model}' not found locally. Downloading...");
                 eprintln!("Downloading model: {}", DEFAULT_OSS_MODEL);
 
                 let status = std::process::Command::new("lms")
@@ -42,7 +39,6 @@ pub async fn ensure_oss_ready(config: &Config) -> std::io::Result<()> {
                         format!("lms command failed with status: {status}"),
                     ));
                 }
-
                 tracing::info!("Successfully downloaded model '{model}'");
             }
         }
