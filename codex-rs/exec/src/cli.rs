@@ -14,8 +14,10 @@ pub struct Cli {
     #[arg(long, short = 'm')]
     pub model: Option<String>,
 
-    #[arg(long = "oss", default_value_t = false)]
-    pub oss: bool,
+    /// Use open-source provider. Optional provider name (lmstudio or ollama).
+    /// If no provider specified, shows selection screen.
+    #[arg(long = "oss", value_name = "PROVIDER", num_args = 0..=1)]
+    pub oss: Option<Option<String>>,
 
     /// Select the sandbox policy to use when executing model-generated shell
     /// commands.

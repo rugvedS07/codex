@@ -18,10 +18,10 @@ pub struct Cli {
     pub model: Option<String>,
 
     /// Convenience flag to select the local open source model provider.
-    /// Equivalent to -c model_provider=oss; verifies a local Ollama server is
-    /// running.
-    #[arg(long = "oss", default_value_t = false)]
-    pub oss: bool,
+    /// Use open-source provider. Optional provider name (lmstudio or ollama).
+    /// If no provider specified, shows selection screen.
+    #[arg(long = "oss", value_name = "PROVIDER", num_args = 0..=1)]
+    pub oss: Option<Option<String>>,
 
     /// Configuration profile from config.toml to specify default options.
     #[arg(long = "profile", short = 'p')]

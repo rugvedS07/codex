@@ -223,9 +223,11 @@ impl ModelProviderInfo {
     }
 }
 
+const DEFAULT_LMSTUDIO_PORT: u32 = 1234;
 const DEFAULT_OLLAMA_PORT: u32 = 11434;
 
-pub const BUILT_IN_OSS_MODEL_PROVIDER_ID: &str = "oss";
+pub const LMSTUDIO_PROVIDER_ID: &str = "lmstudio";
+pub const OLLAMA_PROVIDER_ID: &str = "ollama";
 
 /// Built-in default provider list.
 pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
@@ -275,14 +277,18 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 requires_openai_auth: true,
             },
         ),
-        (BUILT_IN_OSS_MODEL_PROVIDER_ID, create_oss_provider()),
+        (OLLAMA_PROVIDER_ID, create_oss_provider(DEFAULT_OLLAMA_PORT)),
+        (
+            LMSTUDIO_PROVIDER_ID,
+            create_oss_provider(DEFAULT_LMSTUDIO_PORT),
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
     .collect()
 }
 
-pub fn create_oss_provider() -> ModelProviderInfo {
+pub fn create_oss_provider(default_provider_port: u32) -> ModelProviderInfo {
     // These CODEX_OSS_ environment variables are experimental: we may
     // switch to reading values from config.toml instead.
     let codex_oss_base_url = match std::env::var("CODEX_OSS_BASE_URL")
@@ -296,7 +302,7 @@ pub fn create_oss_provider() -> ModelProviderInfo {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(DEFAULT_OLLAMA_PORT)
+                .unwrap_or(default_provider_port)
         ),
     };
 

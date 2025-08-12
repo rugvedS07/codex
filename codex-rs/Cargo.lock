@@ -732,6 +732,7 @@ dependencies = [
  "codex-arg0",
  "codex-common",
  "codex-core",
+ "codex-lmstudio",
  "codex-ollama",
  "owo-colors",
  "predicates",
@@ -789,6 +790,16 @@ dependencies = [
  "seccompiler",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "codex-lmstudio"
+version = "0.0.0"
+dependencies = [
+ "codex-core",
+ "reqwest",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -875,6 +886,7 @@ dependencies = [
  "codex-common",
  "codex-core",
  "codex-file-search",
+ "codex-lmstudio",
  "codex-login",
  "codex-ollama",
  "color-eyre",

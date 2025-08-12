@@ -3,7 +3,6 @@
 // alternate‑screen mode starts; that file opts‑out locally via `allow`.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 use app::App;
-use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
@@ -12,8 +11,9 @@ use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::config_types::SandboxMode;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
+use codex_lmstudio::DEFAULT_OSS_MODEL as LMSTUDIO_DEFAULT_OSS_MODEL;
 use codex_login::CodexAuth;
-use codex_ollama::DEFAULT_OSS_MODEL;
+use codex_ollama::DEFAULT_OSS_MODEL as OLLAMA_DEFAULT_OSS_MODEL;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use tracing::error;
@@ -41,6 +41,7 @@ pub mod live_wrap;
 mod markdown;
 mod markdown_stream;
 pub mod onboarding;
+mod oss_selection;
 mod render;
 mod session_log;
 mod shimmer;
@@ -86,21 +87,23 @@ pub async fn run_main(
         )
     };
 
-    // When using `--oss`, let the bootstrapper pick the model (defaulting to
-    // gpt-oss:20b) and ensure it is present locally. Also, force the built‑in
-    // `oss` model provider.
-    let model = if let Some(model) = &cli.model {
-        Some(model.clone())
-    } else if cli.oss {
-        Some(DEFAULT_OSS_MODEL.to_owned())
-    } else {
-        None // No model specified, will use the default.
+    let model_provider_override = match &cli.oss {
+        Some(Some(provider)) => Some(provider.clone()),
+        Some(None) => Some(oss_selection::select_oss_provider().await?),
+        None => None,
     };
 
-    let model_provider_override = if cli.oss {
-        Some(BUILT_IN_OSS_MODEL_PROVIDER_ID.to_owned())
+    // When using `--oss`, let the bootstrapper pick the model based on selected provider
+    let model = if let Some(model) = &cli.model {
+        Some(model.clone())
+    } else if let Some(provider_id) = &model_provider_override {
+        match provider_id.as_str() {
+            "lmstudio" => Some(LMSTUDIO_DEFAULT_OSS_MODEL.to_owned()),
+            "ollama" => Some(OLLAMA_DEFAULT_OSS_MODEL.to_owned()),
+            _ => None,
+        }
     } else {
-        None
+        None // No model specified, will use the default.
     };
 
     // canonicalize the cwd
@@ -111,13 +114,13 @@ pub async fn run_main(
         approval_policy,
         sandbox_mode,
         cwd,
-        model_provider: model_provider_override,
+        model_provider: model_provider_override.clone(),
         config_profile: cli.config_profile.clone(),
         codex_linux_sandbox_exe,
         base_instructions: None,
         include_plan_tool: Some(true),
-        disable_response_storage: cli.oss.then_some(true),
-        show_raw_agent_reasoning: cli.oss.then_some(true),
+        disable_response_storage: cli.oss.is_some().then_some(true),
+        show_raw_agent_reasoning: cli.oss.is_some().then_some(true),
     };
 
     // Parse `-c` overrides from the CLI.
@@ -204,10 +207,22 @@ pub async fn run_main(
         .with_target(false)
         .with_filter(env_filter());
 
-    if cli.oss {
-        codex_ollama::ensure_oss_ready(&config)
-            .await
-            .map_err(|e| std::io::Error::other(format!("OSS setup failed: {e}")))?;
+    if let Some(provider_id) = &model_provider_override {
+        match provider_id.as_str() {
+            "lmstudio" => {
+                codex_lmstudio::ensure_oss_ready(&config)
+                    .await
+                    .map_err(|e| std::io::Error::other(format!("OSS setup failed: {e}")))?;
+            }
+            "ollama" => {
+                codex_ollama::ensure_oss_ready(&config)
+                    .await
+                    .map_err(|e| std::io::Error::other(format!("OSS setup failed: {e}")))?;
+            }
+            _ => {
+                // Unknown OSS provider, skip setup
+            }
+        }
     }
 
     let _ = tracing_subscriber::registry().with(file_layer).try_init();

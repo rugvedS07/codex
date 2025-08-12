@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 pub use cli::Cli;
-use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
+use codex_core::LMSTUDIO_PROVIDER_ID;
 use codex_core::ConversationManager;
 use codex_core::NewConversation;
 use codex_core::config::Config;
@@ -21,7 +21,9 @@ use codex_core::protocol::InputItem;
 use codex_core::protocol::Op;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::util::is_inside_git_repo;
-use codex_ollama::DEFAULT_OSS_MODEL;
+use codex_lmstudio::DEFAULT_OSS_MODEL as LMSTUDIO_DEFAULT_OSS_MODEL;
+use codex_ollama::DEFAULT_OSS_MODEL as OLLAMA_DEFAULT_OSS_MODEL;
+
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
 use event_processor_with_json_output::EventProcessorWithJsonOutput;
 use tracing::debug;
@@ -116,21 +118,23 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         sandbox_mode_cli_arg.map(Into::<SandboxMode>::into)
     };
 
-    // When using `--oss`, let the bootstrapper pick the model (defaulting to
-    // gpt-oss:20b) and ensure it is present locally. Also, force the built‑in
-    // `oss` model provider.
-    let model = if let Some(model) = model_cli_arg {
-        Some(model)
-    } else if oss {
-        Some(DEFAULT_OSS_MODEL.to_owned())
-    } else {
-        None // No model specified, will use the default.
+    let model_provider = match &oss {
+        Some(Some(provider)) => Some(provider.clone()), // --oss=provider specified
+        Some(None) => Some(LMSTUDIO_PROVIDER_ID.to_string()), // --oss with no value, default to lmstudio
+        None => None, // No specific model provider override.
     };
 
-    let model_provider = if oss {
-        Some(BUILT_IN_OSS_MODEL_PROVIDER_ID.to_string())
+    // When using `--oss`, let the bootstrapper pick the model based on selected provider
+    let model = if let Some(model) = model_cli_arg {
+        Some(model)
+    } else if let Some(provider_id) = &model_provider {
+        match provider_id.as_str() {
+            "lmstudio" => Some(LMSTUDIO_DEFAULT_OSS_MODEL.to_owned()),
+            "ollama" => Some(OLLAMA_DEFAULT_OSS_MODEL.to_owned()),
+            _ => None,
+        }
     } else {
-        None // No specific model provider override.
+        None // No model specified, will use the default.
     };
 
     // Load configuration and determine approval policy
@@ -142,12 +146,12 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         approval_policy: Some(AskForApproval::Never),
         sandbox_mode,
         cwd: cwd.map(|p| p.canonicalize().unwrap_or(p)),
-        model_provider,
+        model_provider: model_provider.clone(),
         codex_linux_sandbox_exe,
         base_instructions: None,
         include_plan_tool: None,
-        disable_response_storage: oss.then_some(true),
-        show_raw_agent_reasoning: oss.then_some(true),
+        disable_response_storage: oss.is_some().then_some(true),
+        show_raw_agent_reasoning: oss.is_some().then_some(true),
     };
     // Parse `-c` overrides.
     let cli_kv_overrides = match config_overrides.parse_overrides() {
@@ -169,10 +173,22 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         ))
     };
 
-    if oss {
-        codex_ollama::ensure_oss_ready(&config)
-            .await
-            .map_err(|e| anyhow::anyhow!("OSS setup failed: {e}"))?;
+    if let Some(provider_id) = &model_provider {
+        match provider_id.as_str() {
+            "lmstudio" => {
+                codex_lmstudio::ensure_oss_ready(&config)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("OSS setup failed: {e}"))?;
+            }
+            "ollama" => {
+                codex_ollama::ensure_oss_ready(&config)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("OSS setup failed: {e}"))?;
+            }
+            _ => {
+                // Unknown OSS provider, skip setup
+            }
+        }
     }
 
     // Print the effective configuration and prompt so users can see what Codex
