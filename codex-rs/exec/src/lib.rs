@@ -42,6 +42,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         images,
         model: model_cli_arg,
         oss,
+        oss_provider,
         config_profile,
         full_auto,
         dangerously_bypass_approvals_and_sandbox,
@@ -151,9 +152,11 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         }
     };
 
-    let model_provider = match &oss {
-        Some(Some(provider)) => Some(provider.clone()),
-        Some(None) => {
+    let model_provider = if oss {
+        if let Some(provider) = &oss_provider {
+            // Explicit provider specified with --oss-provider
+            Some(provider.clone())
+        } else {
             // Check profile config first, then global config, finally error
             let config_profile = config_toml.get_config_profile(config_profile.clone()).ok();
             if let Some(profile) = &config_profile {
@@ -168,24 +171,25 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
                 // Or else error
                 else {
                     return Err(anyhow::anyhow!(
-                        "No default OSS provider configured. Use --oss=provider or set oss_provider to either {LMSTUDIO_OSS_PROVIDER_ID} or {OLLAMA_OSS_PROVIDER_ID} in config.toml"
+                        "No default OSS provider configured. Use --oss-provider=provider or set oss_provider to either {LMSTUDIO_OSS_PROVIDER_ID} or {OLLAMA_OSS_PROVIDER_ID} in config.toml"
                     ));
                 }
             } else if let Some(default) = &config_toml.oss_provider {
                 Some(default.clone())
             } else {
                 return Err(anyhow::anyhow!(
-                    "No default OSS provider configured. Use --oss=provider or set oss_provider to either {LMSTUDIO_OSS_PROVIDER_ID} or {OLLAMA_OSS_PROVIDER_ID} in config.toml"
+                    "No default OSS provider configured. Use --oss-provider=provider or set oss_provider to either {LMSTUDIO_OSS_PROVIDER_ID} or {OLLAMA_OSS_PROVIDER_ID} in config.toml"
                 ));
             }
         }
-        None => None, // No specific model provider override.
+    } else {
+        None // No OSS mode enabled
     };
 
     // When using `--oss`, let the bootstrapper pick the model based on selected provider
     let model = if let Some(model) = model_cli_arg {
         Some(model)
-    } else if oss.is_some() {
+    } else if oss {
         if let Some(provider_id) = &model_provider {
             match provider_id.as_str() {
                 LMSTUDIO_OSS_PROVIDER_ID => Some(LMSTUDIO_DEFAULT_OSS_MODEL.to_owned()),
@@ -212,8 +216,8 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         codex_linux_sandbox_exe,
         base_instructions: None,
         include_plan_tool: None,
-        disable_response_storage: oss.is_some().then_some(true),
-        show_raw_agent_reasoning: oss.is_some().then_some(true),
+        disable_response_storage: oss.then_some(true),
+        show_raw_agent_reasoning: oss.then_some(true),
     };
 
     let config = Config::load_with_cli_overrides(cli_kv_overrides, overrides)?;
@@ -227,7 +231,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         ))
     };
 
-    if oss.is_some() {
+    if oss {
         // We're in the oss section, so provider_id should be Some
         // Let's handle None case gracefully though just in case
         let provider_id = match model_provider.as_ref() {

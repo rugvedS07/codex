@@ -118,34 +118,33 @@ pub async fn run_main(
             }
         };
 
-    let model_provider_override = if cli.oss.is_some() {
-        match &cli.oss {
-            Some(Some(provider)) => Some(provider.clone()),
-            Some(None) => {
-                // Check profile config first, then global config, finally show selection UI
-                let config_profile = config_toml
-                    .get_config_profile(cli.config_profile.clone())
-                    .ok();
-                if let Some(profile) = &config_profile {
-                    // Check if profile has an oss provider
-                    if let Some(profile_oss_provider) = &profile.oss_provider {
-                        Some(profile_oss_provider.clone())
-                    }
-                    // If not then check if the toml has an oss provider
-                    else if let Some(default) = &config_toml.oss_provider {
-                        Some(default.clone())
-                    }
-                    // Or else prompt the user
-                    else {
-                        Some(oss_selection::select_oss_provider(&codex_home).await?)
-                    }
-                } else if let Some(default) = &config_toml.oss_provider {
+    let model_provider_override = if cli.oss {
+        if let Some(provider) = &cli.oss_provider {
+            // Explicit provider specified with --oss-provider
+            Some(provider.clone())
+        } else {
+            // Check profile config first, then global config, finally show selection UI
+            let config_profile = config_toml
+                .get_config_profile(cli.config_profile.clone())
+                .ok();
+            if let Some(profile) = &config_profile {
+                // Check if profile has an oss provider
+                if let Some(profile_oss_provider) = &profile.oss_provider {
+                    Some(profile_oss_provider.clone())
+                }
+                // If not then check if the toml has an oss provider
+                else if let Some(default) = &config_toml.oss_provider {
                     Some(default.clone())
-                } else {
+                }
+                // Or else prompt the user
+                else {
                     Some(oss_selection::select_oss_provider(&codex_home).await?)
                 }
+            } else if let Some(default) = &config_toml.oss_provider {
+                Some(default.clone())
+            } else {
+                Some(oss_selection::select_oss_provider(&codex_home).await?)
             }
-            None => None,
         }
     } else {
         None
@@ -154,7 +153,7 @@ pub async fn run_main(
     // When using `--oss`, let the bootstrapper pick the model based on selected provider
     let model = if let Some(model) = &cli.model {
         Some(model.clone())
-    } else if cli.oss.is_some() {
+    } else if cli.oss {
         // Use the provider from model_provider_override
         if let Some(provider_id) = &model_provider_override {
             match provider_id.as_str() {
@@ -182,8 +181,8 @@ pub async fn run_main(
         codex_linux_sandbox_exe,
         base_instructions: None,
         include_plan_tool: Some(true),
-        disable_response_storage: cli.oss.is_some().then_some(true),
-        show_raw_agent_reasoning: cli.oss.is_some().then_some(true),
+        disable_response_storage: cli.oss.then_some(true),
+        show_raw_agent_reasoning: cli.oss.then_some(true),
     };
 
     let mut config = {
@@ -240,7 +239,7 @@ pub async fn run_main(
         .with_target(false)
         .with_filter(env_filter());
 
-    if cli.oss.is_some() && model_provider_override.is_some() {
+    if cli.oss && model_provider_override.is_some() {
         // We're in the oss section, so provider_id should be Some
         // Let's handle None case gracefully though just in case
         let provider_id = match model_provider_override.as_ref() {
