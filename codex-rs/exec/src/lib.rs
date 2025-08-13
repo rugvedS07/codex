@@ -212,14 +212,15 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         ))
     };
 
-    if let Some(provider_id) = &model_provider {
+    if oss.is_some() {
+        let provider_id = model_provider.as_ref().unwrap();
         match provider_id.as_str() {
-            "lmstudio" => {
+            LMSTUDIO_OSS_PROVIDER_ID => {
                 codex_lmstudio::ensure_oss_ready(&config)
                     .await
                     .map_err(|e| anyhow::anyhow!("OSS setup failed: {e}"))?;
             }
-            "ollama" => {
+            OLLAMA_OSS_PROVIDER_ID => {
                 codex_ollama::ensure_oss_ready(&config)
                     .await
                     .map_err(|e| anyhow::anyhow!("OSS setup failed: {e}"))?;

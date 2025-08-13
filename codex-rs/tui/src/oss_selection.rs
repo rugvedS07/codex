@@ -1,8 +1,11 @@
 use std::io;
 use std::sync::LazyLock;
 
+use codex_core::DEFAULT_LMSTUDIO_PORT;
+use codex_core::DEFAULT_OLLAMA_PORT;
+use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
+use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::config::set_default_oss_provider;
-use codex_core::{LMSTUDIO_OSS_PROVIDER_ID, OLLAMA_OSS_PROVIDER_ID};
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -304,7 +307,7 @@ pub async fn select_oss_provider() -> io::Result<String> {
 }
 
 async fn check_lmstudio_status() -> ProviderStatus {
-    match check_port_status(1234).await {
+    match check_port_status(DEFAULT_LMSTUDIO_PORT).await {
         Ok(true) => ProviderStatus::Running,
         Ok(false) => ProviderStatus::NotRunning,
         Err(_) => ProviderStatus::Unknown,
@@ -312,7 +315,7 @@ async fn check_lmstudio_status() -> ProviderStatus {
 }
 
 async fn check_ollama_status() -> ProviderStatus {
-    match check_port_status(11434).await {
+    match check_port_status(DEFAULT_OLLAMA_PORT).await {
         Ok(true) => ProviderStatus::Running,
         Ok(false) => ProviderStatus::NotRunning,
         Err(_) => ProviderStatus::Unknown,
