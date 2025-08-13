@@ -226,8 +226,8 @@ impl ModelProviderInfo {
 const DEFAULT_LMSTUDIO_PORT: u32 = 1234;
 const DEFAULT_OLLAMA_PORT: u32 = 11434;
 
-pub const LMSTUDIO_PROVIDER_ID: &str = "lmstudio";
-pub const OLLAMA_PROVIDER_ID: &str = "ollama";
+pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
+pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 
 /// Built-in default provider list.
 pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
@@ -277,9 +277,12 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 requires_openai_auth: true,
             },
         ),
-        (OLLAMA_PROVIDER_ID, create_oss_provider(DEFAULT_OLLAMA_PORT)),
         (
-            LMSTUDIO_PROVIDER_ID,
+            OLLAMA_OSS_PROVIDER_ID,
+            create_oss_provider(DEFAULT_OLLAMA_PORT),
+        ),
+        (
+            LMSTUDIO_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_LMSTUDIO_PORT),
         ),
     ]

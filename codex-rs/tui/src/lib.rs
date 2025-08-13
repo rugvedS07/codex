@@ -3,6 +3,8 @@
 // alternate‑screen mode starts; that file opts‑out locally via `allow`.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 use app::App;
+use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
+use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
@@ -86,21 +88,66 @@ pub async fn run_main(
             cli.approval_policy.map(Into::into),
         )
     };
+    // Parse `-c` overrides from the CLI.
+    let cli_kv_overrides = match cli.config_overrides.parse_overrides() {
+        Ok(v) => v,
+        #[allow(clippy::print_stderr)]
+        Err(e) => {
+            eprintln!("Error parsing -c overrides: {e}");
+            std::process::exit(1);
+        }
+    };
 
-    let model_provider_override = match &cli.oss {
-        Some(Some(provider)) => Some(provider.clone()),
-        Some(None) => Some(oss_selection::select_oss_provider().await?),
-        None => None,
+    // we load config.toml here to determine project state.
+    #[allow(clippy::print_stderr)]
+    let config_toml = {
+        let codex_home = match find_codex_home() {
+            Ok(codex_home) => codex_home,
+            Err(err) => {
+                eprintln!("Error finding codex home: {err}");
+                std::process::exit(1);
+            }
+        };
+
+        match load_config_as_toml_with_cli_overrides(&codex_home, cli_kv_overrides.clone()) {
+            Ok(config_toml) => config_toml,
+            Err(err) => {
+                eprintln!("Error loading config.toml: {err}");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let model_provider_override = if cli.oss.is_some() {
+        match &cli.oss {
+            Some(Some(provider)) => Some(provider.clone()),
+            Some(None) => {
+                // Check config for default first
+                if let Some(default) = &config_toml.oss_provider {
+                    Some(default.clone())
+                } else {
+                    Some(oss_selection::select_oss_provider().await?)
+                }
+            }
+            None => None,
+        }
+    } else {
+        None
     };
 
     // When using `--oss`, let the bootstrapper pick the model based on selected provider
     let model = if let Some(model) = &cli.model {
         Some(model.clone())
-    } else if let Some(provider_id) = &model_provider_override {
-        match provider_id.as_str() {
-            "lmstudio" => Some(LMSTUDIO_DEFAULT_OSS_MODEL.to_owned()),
-            "ollama" => Some(OLLAMA_DEFAULT_OSS_MODEL.to_owned()),
-            _ => None,
+    } else if cli.oss.is_some() {
+        // Use the provider from model_provider_override
+        if let Some(provider_id) = &model_provider_override {
+            match provider_id.as_str() {
+                LMSTUDIO_OSS_PROVIDER_ID => Some(LMSTUDIO_DEFAULT_OSS_MODEL.to_owned()),
+                OLLAMA_OSS_PROVIDER_ID => Some(OLLAMA_DEFAULT_OSS_MODEL.to_owned()),
+                _ => None,
+            }
+        } else {
+            None
         }
     } else {
         None // No model specified, will use the default.
@@ -123,44 +170,14 @@ pub async fn run_main(
         show_raw_agent_reasoning: cli.oss.is_some().then_some(true),
     };
 
-    // Parse `-c` overrides from the CLI.
-    let cli_kv_overrides = match cli.config_overrides.parse_overrides() {
-        Ok(v) => v,
-        #[allow(clippy::print_stderr)]
-        Err(e) => {
-            eprintln!("Error parsing -c overrides: {e}");
-            std::process::exit(1);
-        }
-    };
-
     let mut config = {
         // Load configuration and support CLI overrides.
 
         #[allow(clippy::print_stderr)]
-        match Config::load_with_cli_overrides(cli_kv_overrides.clone(), overrides) {
+        match Config::load_with_cli_overrides(cli_kv_overrides, overrides) {
             Ok(config) => config,
             Err(err) => {
                 eprintln!("Error loading configuration: {err}");
-                std::process::exit(1);
-            }
-        }
-    };
-
-    // we load config.toml here to determine project state.
-    #[allow(clippy::print_stderr)]
-    let config_toml = {
-        let codex_home = match find_codex_home() {
-            Ok(codex_home) => codex_home,
-            Err(err) => {
-                eprintln!("Error finding codex home: {err}");
-                std::process::exit(1);
-            }
-        };
-
-        match load_config_as_toml_with_cli_overrides(&codex_home, cli_kv_overrides) {
-            Ok(config_toml) => config_toml,
-            Err(err) => {
-                eprintln!("Error loading config.toml: {err}");
                 std::process::exit(1);
             }
         }
@@ -207,14 +224,15 @@ pub async fn run_main(
         .with_target(false)
         .with_filter(env_filter());
 
-    if let Some(provider_id) = &model_provider_override {
+    if cli.oss.is_some() {
+        let provider_id = model_provider_override.as_ref().unwrap();
         match provider_id.as_str() {
-            "lmstudio" => {
+            LMSTUDIO_OSS_PROVIDER_ID => {
                 codex_lmstudio::ensure_oss_ready(&config)
                     .await
                     .map_err(|e| std::io::Error::other(format!("OSS setup failed: {e}")))?;
             }
-            "ollama" => {
+            OLLAMA_OSS_PROVIDER_ID => {
                 codex_ollama::ensure_oss_ready(&config)
                     .await
                     .map_err(|e| std::io::Error::other(format!("OSS setup failed: {e}")))?;

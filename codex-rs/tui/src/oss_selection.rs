@@ -1,7 +1,8 @@
 use std::io;
 use std::sync::LazyLock;
 
-use codex_core::{LMSTUDIO_PROVIDER_ID, OLLAMA_PROVIDER_ID};
+use codex_core::config::set_default_oss_provider;
+use codex_core::{LMSTUDIO_OSS_PROVIDER_ID, OLLAMA_OSS_PROVIDER_ID};
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -52,13 +53,13 @@ static OSS_SELECT_OPTIONS: LazyLock<Vec<SelectOption>> = LazyLock::new(|| {
             label: Line::from(vec!["L".underlined(), "M Studio".into()]),
             description: "Local LM Studio server (default port 1234)",
             key: KeyCode::Char('l'),
-            provider_id: LMSTUDIO_PROVIDER_ID,
+            provider_id: LMSTUDIO_OSS_PROVIDER_ID,
         },
         SelectOption {
             label: Line::from(vec!["O".underlined(), "llama".into()]),
             description: "Local Ollama server (default port 11434)",
             key: KeyCode::Char('o'),
-            provider_id: OLLAMA_PROVIDER_ID,
+            provider_id: OLLAMA_OSS_PROVIDER_ID,
         },
     ]
 });
@@ -172,7 +173,7 @@ impl OssSelectionWidget<'_> {
                 self.send_decision(opt.provider_id.to_string());
             }
             KeyCode::Esc => {
-                self.send_decision(LMSTUDIO_PROVIDER_ID.to_string());
+                self.send_decision(LMSTUDIO_OSS_PROVIDER_ID.to_string());
             }
             other => {
                 let normalized = Self::normalize_keycode(other);
@@ -292,6 +293,12 @@ pub async fn select_oss_provider() -> io::Result<String> {
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    if let Ok(ref provider) = result {
+        if let Err(e) = set_default_oss_provider(provider) {
+            eprintln!("Warning: Failed to save OSS provider preference: {}", e);
+        }
+    }
 
     result
 }

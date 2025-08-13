@@ -8,11 +8,14 @@ use std::io::Read;
 use std::path::PathBuf;
 
 pub use cli::Cli;
-use codex_core::LMSTUDIO_PROVIDER_ID;
 use codex_core::ConversationManager;
+use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_core::NewConversation;
+use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
+use codex_core::config::find_codex_home;
+use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::config_types::SandboxMode;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::Event;
@@ -118,20 +121,64 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         sandbox_mode_cli_arg.map(Into::<SandboxMode>::into)
     };
 
+    // Parse `-c` overrides from the CLI.
+    let cli_kv_overrides = match config_overrides.parse_overrides() {
+        Ok(v) => v,
+        #[allow(clippy::print_stderr)]
+        Err(e) => {
+            eprintln!("Error parsing -c overrides: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // we load config.toml here to determine project state.
+    #[allow(clippy::print_stderr)]
+    let config_toml = {
+        let codex_home = match find_codex_home() {
+            Ok(codex_home) => codex_home,
+            Err(err) => {
+                eprintln!("Error finding codex home: {err}");
+                std::process::exit(1);
+            }
+        };
+
+        match load_config_as_toml_with_cli_overrides(&codex_home, cli_kv_overrides.clone()) {
+            Ok(config_toml) => config_toml,
+            Err(err) => {
+                eprintln!("Error loading config.toml: {err}");
+                std::process::exit(1);
+            }
+        }
+    };
+
     let model_provider = match &oss {
-        Some(Some(provider)) => Some(provider.clone()), // --oss=provider specified
-        Some(None) => Some(LMSTUDIO_PROVIDER_ID.to_string()), // --oss with no value, default to lmstudio
+        Some(Some(provider)) => Some(provider.clone()),
+        Some(None) => {
+            // Check config for default first
+            if let Some(default) = &config_toml.oss_provider {
+                Some(default.clone())
+            } else {
+                // If no default found, throw an error
+                return Err(anyhow::anyhow!(
+                    "No default OSS provider configured. Use --oss=provider or set oss_provider to either {LMSTUDIO_OSS_PROVIDER_ID} or {OLLAMA_OSS_PROVIDER_ID} in config.toml"
+                ));
+            }
+        }
         None => None, // No specific model provider override.
     };
 
     // When using `--oss`, let the bootstrapper pick the model based on selected provider
     let model = if let Some(model) = model_cli_arg {
         Some(model)
-    } else if let Some(provider_id) = &model_provider {
-        match provider_id.as_str() {
-            "lmstudio" => Some(LMSTUDIO_DEFAULT_OSS_MODEL.to_owned()),
-            "ollama" => Some(OLLAMA_DEFAULT_OSS_MODEL.to_owned()),
-            _ => None,
+    } else if oss.is_some() {
+        if let Some(provider_id) = &model_provider {
+            match provider_id.as_str() {
+                LMSTUDIO_OSS_PROVIDER_ID => Some(LMSTUDIO_DEFAULT_OSS_MODEL.to_owned()),
+                OLLAMA_OSS_PROVIDER_ID => Some(OLLAMA_DEFAULT_OSS_MODEL.to_owned()),
+                _ => None,
+            }
+        } else {
+            None
         }
     } else {
         None // No model specified, will use the default.
@@ -152,14 +199,6 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         include_plan_tool: None,
         disable_response_storage: oss.is_some().then_some(true),
         show_raw_agent_reasoning: oss.is_some().then_some(true),
-    };
-    // Parse `-c` overrides.
-    let cli_kv_overrides = match config_overrides.parse_overrides() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Error parsing -c overrides: {e}");
-            std::process::exit(1);
-        }
     };
 
     let config = Config::load_with_cli_overrides(cli_kv_overrides, overrides)?;

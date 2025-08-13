@@ -266,6 +266,35 @@ pub fn set_project_trusted(codex_home: &Path, project_path: &Path) -> anyhow::Re
     Ok(())
 }
 
+/// Save the default OSS provider preference to config.toml
+pub fn set_default_oss_provider(provider: &str) -> std::io::Result<()> {
+    let codex_home = find_codex_home()?;
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+
+    // Read existing config or create empty string if file doesn't exist
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+
+    // Parse as DocumentMut for editing while preserving structure
+    let mut doc = content.parse::<DocumentMut>().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("failed to parse config.toml: {e}"),
+        )
+    })?;
+
+    // Set the default_oss_provider at root level
+    use toml_edit::value;
+    doc["oss_provider"] = value(provider);
+
+    // Write the modified document back
+    std::fs::write(&config_path, doc.to_string())?;
+    Ok(())
+}
+
 /// Apply a single dotted-path override onto a TOML value.
 fn apply_toml_override(root: &mut TomlValue, path: &str, value: TomlValue) {
     use toml::value::Table;
@@ -404,6 +433,8 @@ pub struct ConfigToml {
     pub internal_originator: Option<String>,
 
     pub projects: Option<HashMap<String, ProjectConfig>>,
+
+    pub oss_provider: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]

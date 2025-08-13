@@ -1,4 +1,4 @@
-use codex_core::LMSTUDIO_PROVIDER_ID;
+use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_core::config::Config;
 use std::io;
 
@@ -11,11 +11,11 @@ impl LMStudioClient {
     pub async fn try_from_provider(config: &Config) -> std::io::Result<Self> {
         let provider = config
             .model_providers
-            .get(LMSTUDIO_PROVIDER_ID)
+            .get(LMSTUDIO_OSS_PROVIDER_ID)
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("Built-in provider {LMSTUDIO_PROVIDER_ID} not found",),
+                    format!("Built-in provider {LMSTUDIO_OSS_PROVIDER_ID} not found",),
                 )
             })?;
         let base_url = provider
