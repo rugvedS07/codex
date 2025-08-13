@@ -267,8 +267,7 @@ pub fn set_project_trusted(codex_home: &Path, project_path: &Path) -> anyhow::Re
 }
 
 /// Save the default OSS provider preference to config.toml
-pub fn set_default_oss_provider(provider: &str) -> std::io::Result<()> {
-    let codex_home = find_codex_home()?;
+pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::Result<()> {
     let config_path = codex_home.join(CONFIG_TOML_FILE);
 
     // Read existing config or create empty string if file doesn't exist
@@ -1175,6 +1174,33 @@ disable_response_storage = true
         };
 
         assert_eq!(expected_zdr_profile_config, zdr_profile_config);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_default_oss_provider() -> std::io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let codex_home = temp_dir.path();
+        let config_path = codex_home.join(CONFIG_TOML_FILE);
+
+        // Test setting provider on empty config
+        set_default_oss_provider(codex_home, "ollama")?;
+        let content = std::fs::read_to_string(&config_path)?;
+        assert!(content.contains("oss_provider = \"ollama\""));
+
+        // Test updating existing config
+        std::fs::write(&config_path, "model = \"gpt-4\"\n")?;
+        set_default_oss_provider(codex_home, "lmstudio")?;
+        let content = std::fs::read_to_string(&config_path)?;
+        assert!(content.contains("oss_provider = \"lmstudio\""));
+        assert!(content.contains("model = \"gpt-4\""));
+
+        // Test overwriting existing oss_provider
+        set_default_oss_provider(codex_home, "ollama")?;
+        let content = std::fs::read_to_string(&config_path)?;
+        assert!(content.contains("oss_provider = \"ollama\""));
+        assert!(!content.contains("oss_provider = \"lmstudio\""));
 
         Ok(())
     }

@@ -100,23 +100,23 @@ pub async fn run_main(
 
     // we load config.toml here to determine project state.
     #[allow(clippy::print_stderr)]
-    let config_toml = {
-        let codex_home = match find_codex_home() {
-            Ok(codex_home) => codex_home,
-            Err(err) => {
-                eprintln!("Error finding codex home: {err}");
-                std::process::exit(1);
-            }
-        };
+    let codex_home = match find_codex_home() {
+        Ok(codex_home) => codex_home,
+        Err(err) => {
+            eprintln!("Error finding codex home: {err}");
+            std::process::exit(1);
+        }
+    };
 
+    #[allow(clippy::print_stderr)]
+    let config_toml =
         match load_config_as_toml_with_cli_overrides(&codex_home, cli_kv_overrides.clone()) {
             Ok(config_toml) => config_toml,
             Err(err) => {
                 eprintln!("Error loading config.toml: {err}");
                 std::process::exit(1);
             }
-        }
-    };
+        };
 
     let model_provider_override = if cli.oss.is_some() {
         match &cli.oss {
@@ -126,7 +126,7 @@ pub async fn run_main(
                 if let Some(default) = &config_toml.oss_provider {
                     Some(default.clone())
                 } else {
-                    Some(oss_selection::select_oss_provider().await?)
+                    Some(oss_selection::select_oss_provider(&codex_home).await?)
                 }
             }
             None => None,

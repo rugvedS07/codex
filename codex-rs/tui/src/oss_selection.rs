@@ -6,9 +6,18 @@ use codex_core::DEFAULT_OLLAMA_PORT;
 use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::config::set_default_oss_provider;
+use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::{self};
+use crossterm::execute;
+use crossterm::terminal::EnterAlternateScreen;
+use crossterm::terminal::LeaveAlternateScreen;
+use crossterm::terminal::disable_raw_mode;
+use crossterm::terminal::enable_raw_mode;
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
@@ -26,6 +35,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
+use std::time::Duration;
 
 #[derive(Clone)]
 struct ProviderOption {
@@ -82,10 +92,7 @@ pub struct OssSelectionWidget<'a> {
 }
 
 impl OssSelectionWidget<'_> {
-    pub async fn new() -> io::Result<Self> {
-        let lmstudio_status = check_lmstudio_status().await;
-        let ollama_status = check_ollama_status().await;
-
+    fn new(lmstudio_status: ProviderStatus, ollama_status: ProviderStatus) -> io::Result<Self> {
         let providers = vec![
             ProviderOption {
                 name: "LM Studio".to_string(),
@@ -265,15 +272,27 @@ fn get_status_symbol_and_color(status: &ProviderStatus) -> (&'static str, Color)
     }
 }
 
-pub async fn select_oss_provider() -> io::Result<String> {
-    use crossterm::{
-        event::{self, Event},
-        execute,
-        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-    };
-    use ratatui::{Terminal, backend::CrosstermBackend};
+pub async fn select_oss_provider(codex_home: &std::path::Path) -> io::Result<String> {
+    // Check provider statuses first
+    let lmstudio_status = check_lmstudio_status().await;
+    let ollama_status = check_ollama_status().await;
 
-    let mut widget = OssSelectionWidget::new().await?;
+    // Autoselect if only one is running
+    match (&lmstudio_status, &ollama_status) {
+        (ProviderStatus::NotRunning, ProviderStatus::Running) => {
+            let provider = LMSTUDIO_OSS_PROVIDER_ID.to_string();
+            return Ok(provider);
+        }
+        (ProviderStatus::Running, ProviderStatus::NotRunning) => {
+            let provider = OLLAMA_OSS_PROVIDER_ID.to_string();
+            return Ok(provider);
+        }
+        _ => {
+            // Both running or both not running - show UI
+        }
+    }
+
+    let mut widget = OssSelectionWidget::new(lmstudio_status, ollama_status)?;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -297,8 +316,10 @@ pub async fn select_oss_provider() -> io::Result<String> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 
+    // If the user manually selected an OSS provider, we save it as the
+    // default one to use later.
     if let Ok(ref provider) = result {
-        if let Err(e) = set_default_oss_provider(provider) {
+        if let Err(e) = set_default_oss_provider(codex_home, provider) {
             eprintln!("Warning: Failed to save OSS provider preference: {}", e);
         }
     }
@@ -323,8 +344,6 @@ async fn check_ollama_status() -> ProviderStatus {
 }
 
 async fn check_port_status(port: u16) -> io::Result<bool> {
-    use std::time::Duration;
-
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
