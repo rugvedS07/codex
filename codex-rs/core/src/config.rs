@@ -13,6 +13,7 @@ use crate::model_family::ModelFamily;
 use crate::model_family::find_family_for_model;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::built_in_model_providers;
+use crate::model_provider_info::{LMSTUDIO_OSS_PROVIDER_ID, OLLAMA_OSS_PROVIDER_ID};
 use crate::openai_model_info::get_model_info;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
@@ -268,6 +269,21 @@ pub fn set_project_trusted(codex_home: &Path, project_path: &Path) -> anyhow::Re
 
 /// Save the default OSS provider preference to config.toml
 pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::Result<()> {
+    // Validate that the provider is one of the known OSS providers
+    match provider {
+        LMSTUDIO_OSS_PROVIDER_ID | OLLAMA_OSS_PROVIDER_ID => {
+            // Valid provider, continue
+        }
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Invalid OSS provider '{}'. Must be one of: {}, {}",
+                    provider, LMSTUDIO_OSS_PROVIDER_ID, OLLAMA_OSS_PROVIDER_ID
+                ),
+            ));
+        }
+    }
     let config_path = codex_home.join(CONFIG_TOML_FILE);
 
     // Read existing config or create empty string if file doesn't exist
@@ -1184,23 +1200,31 @@ disable_response_storage = true
         let codex_home = temp_dir.path();
         let config_path = codex_home.join(CONFIG_TOML_FILE);
 
-        // Test setting provider on empty config
-        set_default_oss_provider(codex_home, "ollama")?;
+        // Test setting valid provider on empty config
+        set_default_oss_provider(codex_home, OLLAMA_OSS_PROVIDER_ID)?;
         let content = std::fs::read_to_string(&config_path)?;
         assert!(content.contains("oss_provider = \"ollama\""));
 
         // Test updating existing config
         std::fs::write(&config_path, "model = \"gpt-4\"\n")?;
-        set_default_oss_provider(codex_home, "lmstudio")?;
+        set_default_oss_provider(codex_home, LMSTUDIO_OSS_PROVIDER_ID)?;
         let content = std::fs::read_to_string(&config_path)?;
         assert!(content.contains("oss_provider = \"lmstudio\""));
         assert!(content.contains("model = \"gpt-4\""));
 
         // Test overwriting existing oss_provider
-        set_default_oss_provider(codex_home, "ollama")?;
+        set_default_oss_provider(codex_home, OLLAMA_OSS_PROVIDER_ID)?;
         let content = std::fs::read_to_string(&config_path)?;
         assert!(content.contains("oss_provider = \"ollama\""));
         assert!(!content.contains("oss_provider = \"lmstudio\""));
+
+        // Test invalid provider
+        let result = set_default_oss_provider(codex_home, "invalid_provider");
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("Invalid OSS provider"));
+        assert!(error.to_string().contains("invalid_provider"));
 
         Ok(())
     }

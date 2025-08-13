@@ -279,11 +279,11 @@ pub async fn select_oss_provider(codex_home: &std::path::Path) -> io::Result<Str
 
     // Autoselect if only one is running
     match (&lmstudio_status, &ollama_status) {
-        (ProviderStatus::NotRunning, ProviderStatus::Running) => {
+        (ProviderStatus::Running, ProviderStatus::NotRunning) => {
             let provider = LMSTUDIO_OSS_PROVIDER_ID.to_string();
             return Ok(provider);
         }
-        (ProviderStatus::Running, ProviderStatus::NotRunning) => {
+        (ProviderStatus::NotRunning, ProviderStatus::Running) => {
             let provider = OLLAMA_OSS_PROVIDER_ID.to_string();
             return Ok(provider);
         }
