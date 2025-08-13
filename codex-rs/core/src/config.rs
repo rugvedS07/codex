@@ -11,9 +11,10 @@ use crate::config_types::Tui;
 use crate::config_types::UriBasedFileOpener;
 use crate::model_family::ModelFamily;
 use crate::model_family::find_family_for_model;
+use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use crate::model_provider_info::ModelProviderInfo;
+use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use crate::model_provider_info::built_in_model_providers;
-use crate::model_provider_info::{LMSTUDIO_OSS_PROVIDER_ID, OLLAMA_OSS_PROVIDER_ID};
 use crate::openai_model_info::get_model_info;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
@@ -278,8 +279,7 @@ pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::R
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
-                    "Invalid OSS provider '{}'. Must be one of: {}, {}",
-                    provider, LMSTUDIO_OSS_PROVIDER_ID, OLLAMA_OSS_PROVIDER_ID
+                    "Invalid OSS provider '{provider}'. Must be one of: {LMSTUDIO_OSS_PROVIDER_ID}, {OLLAMA_OSS_PROVIDER_ID}"
                 ),
             ));
         }

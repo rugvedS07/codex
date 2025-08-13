@@ -154,11 +154,26 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     let model_provider = match &oss {
         Some(Some(provider)) => Some(provider.clone()),
         Some(None) => {
-            // Check config for default first
-            if let Some(default) = &config_toml.oss_provider {
+            // Check profile config first, then global config, finally error
+            let config_profile = config_toml.get_config_profile(config_profile.clone()).ok();
+            if let Some(profile) = &config_profile {
+                // Check if profile has an oss provider
+                if let Some(profile_oss_provider) = &profile.oss_provider {
+                    Some(profile_oss_provider.clone())
+                }
+                // If not then check if the toml has an oss provider
+                else if let Some(default) = &config_toml.oss_provider {
+                    Some(default.clone())
+                }
+                // Or else error
+                else {
+                    return Err(anyhow::anyhow!(
+                        "No default OSS provider configured. Use --oss=provider or set oss_provider to either {LMSTUDIO_OSS_PROVIDER_ID} or {OLLAMA_OSS_PROVIDER_ID} in config.toml"
+                    ));
+                }
+            } else if let Some(default) = &config_toml.oss_provider {
                 Some(default.clone())
             } else {
-                // If no default found, throw an error
                 return Err(anyhow::anyhow!(
                     "No default OSS provider configured. Use --oss=provider or set oss_provider to either {LMSTUDIO_OSS_PROVIDER_ID} or {OLLAMA_OSS_PROVIDER_ID} in config.toml"
                 ));

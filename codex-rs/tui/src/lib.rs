@@ -122,8 +122,24 @@ pub async fn run_main(
         match &cli.oss {
             Some(Some(provider)) => Some(provider.clone()),
             Some(None) => {
-                // Check config for default first
-                if let Some(default) = &config_toml.oss_provider {
+                // Check profile config first, then global config, finally show selection UI
+                let config_profile = config_toml
+                    .get_config_profile(cli.config_profile.clone())
+                    .ok();
+                if let Some(profile) = &config_profile {
+                    // Check if profile has an oss provider
+                    if let Some(profile_oss_provider) = &profile.oss_provider {
+                        Some(profile_oss_provider.clone())
+                    }
+                    // If not then check if the toml has an oss provider
+                    else if let Some(default) = &config_toml.oss_provider {
+                        Some(default.clone())
+                    }
+                    // Or else prompt the user
+                    else {
+                        Some(oss_selection::select_oss_provider(&codex_home).await?)
+                    }
+                } else if let Some(default) = &config_toml.oss_provider {
                     Some(default.clone())
                 } else {
                     Some(oss_selection::select_oss_provider(&codex_home).await?)
