@@ -213,7 +213,17 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     };
 
     if oss.is_some() {
-        let provider_id = model_provider.as_ref().unwrap();
+        // We're in the oss section, so provider_id should be Some
+        // Let's handle None case gracefully though just in case
+        let provider_id = match model_provider.as_ref() {
+            Some(id) => id,
+            None => {
+                error!("OSS provider unexpectedly not set when oss flag is used");
+                return Err(anyhow::anyhow!(
+                    "OSS provider not set but oss flag was used"
+                ));
+            }
+        };
         match provider_id.as_str() {
             LMSTUDIO_OSS_PROVIDER_ID => {
                 codex_lmstudio::ensure_oss_ready(&config)

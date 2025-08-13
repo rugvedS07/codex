@@ -320,7 +320,7 @@ pub async fn select_oss_provider(codex_home: &std::path::Path) -> io::Result<Str
     // default one to use later.
     if let Ok(ref provider) = result {
         if let Err(e) = set_default_oss_provider(codex_home, provider) {
-            eprintln!("Warning: Failed to save OSS provider preference: {}", e);
+            tracing::warn!("Failed to save OSS provider preference: {e}");
         }
     }
 

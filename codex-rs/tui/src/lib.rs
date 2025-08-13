@@ -224,8 +224,18 @@ pub async fn run_main(
         .with_target(false)
         .with_filter(env_filter());
 
-    if cli.oss.is_some() {
-        let provider_id = model_provider_override.as_ref().unwrap();
+    if cli.oss.is_some() && model_provider_override.is_some() {
+        // We're in the oss section, so provider_id should be Some
+        // Let's handle None case gracefully though just in case
+        let provider_id = match model_provider_override.as_ref() {
+            Some(id) => id,
+            None => {
+                error!("OSS provider unexpectedly not set when oss flag is used");
+                return Err(std::io::Error::other(
+                    "OSS provider not set but oss flag was used",
+                ));
+            }
+        };
         match provider_id.as_str() {
             LMSTUDIO_OSS_PROVIDER_ID => {
                 codex_lmstudio::ensure_oss_ready(&config)

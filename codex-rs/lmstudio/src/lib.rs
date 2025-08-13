@@ -19,7 +19,7 @@ pub async fn ensure_oss_ready(config: &Config) -> std::io::Result<()> {
     match lmstudio_client.fetch_models().await {
         Ok(models) => {
             if !models.iter().any(|m| m == DEFAULT_OSS_MODEL) {
-                eprintln!("Downloading model: {}", DEFAULT_OSS_MODEL);
+                eprintln!("Downloading model: {DEFAULT_OSS_MODEL}");
 
                 let status = std::process::Command::new("lms")
                     .args(["get", "--yes", DEFAULT_OSS_MODEL])
@@ -27,17 +27,15 @@ pub async fn ensure_oss_ready(config: &Config) -> std::io::Result<()> {
                     .stderr(std::process::Stdio::inherit())
                     .status()
                     .map_err(|e| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("Failed to execute 'lms get --yes {DEFAULT_OSS_MODEL}': {e}"),
-                        )
+                        std::io::Error::other(format!(
+                            "Failed to execute 'lms get --yes {DEFAULT_OSS_MODEL}': {e}"
+                        ))
                     })?;
 
                 if !status.success() {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("lms command failed with status: {status}"),
-                    ));
+                    return Err(std::io::Error::other(format!(
+                        "lms command failed with status: {status}"
+                    )));
                 }
                 tracing::info!("Successfully downloaded model '{model}'");
             }

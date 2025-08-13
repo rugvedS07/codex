@@ -18,10 +18,12 @@ impl LMStudioClient {
                     format!("Built-in provider {LMSTUDIO_OSS_PROVIDER_ID} not found",),
                 )
             })?;
-        let base_url = provider
-            .base_url
-            .as_ref()
-            .expect("oss provider must have a base_url");
+        let base_url = provider.base_url.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "oss provider must have a base_url",
+            )
+        })?;
 
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
@@ -43,21 +45,23 @@ impl LMStudioClient {
 
         match response {
             Ok(resp) if resp.status().is_success() => Ok(()),
-            Ok(resp) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server returned error: {}", resp.status()),
-            )),
-            Err(err) => Err(io::Error::new(io::ErrorKind::Other, err)),
+            Ok(resp) => Err(io::Error::other(format!(
+                "Server returned error: {}",
+                resp.status()
+            ))),
+            Err(err) => Err(io::Error::other(err)),
         }
     }
 
     // Return the list of models available on the LM Studio server.
     pub async fn fetch_models(&self) -> io::Result<Vec<String>> {
         let url = format!("{}/models", self.base_url.trim_end_matches('/'));
-        let response =
-            self.client.get(&url).send().await.map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("Request failed: {e}"))
-            })?;
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| io::Error::other(format!("Request failed: {e}")))?;
 
         if response.status().is_success() {
             let json: serde_json::Value = response.json().await.map_err(|e| {
@@ -74,10 +78,10 @@ impl LMStudioClient {
                 .collect();
             Ok(models)
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to fetch models: {}", response.status()),
-            ))
+            Err(io::Error::other(format!(
+                "Failed to fetch models: {}",
+                response.status()
+            )))
         }
     }
 
