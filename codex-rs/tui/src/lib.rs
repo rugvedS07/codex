@@ -138,12 +138,26 @@ pub async fn run_main(
                 }
                 // Or else prompt the user
                 else {
-                    Some(oss_selection::select_oss_provider(&codex_home).await?)
+                    let provider = oss_selection::select_oss_provider(&codex_home).await?;
+                    if provider == "__CANCELLED__" {
+                        // If user cancelled the OSS selection, we should exit gracefully rather than fail
+                        return Err(std::io::Error::other(
+                            "OSS provider selection was cancelled by user",
+                        ));
+                    }
+                    Some(provider)
                 }
             } else if let Some(default) = &config_toml.oss_provider {
                 Some(default.clone())
             } else {
-                Some(oss_selection::select_oss_provider(&codex_home).await?)
+                let provider = oss_selection::select_oss_provider(&codex_home).await?;
+                if provider == "__CANCELLED__" {
+                    // If user cancelled the OSS selection, we should exit gracefully rather than fail
+                    return Err(std::io::Error::other(
+                        "OSS provider selection was cancelled by user",
+                    ));
+                }
+                Some(provider)
             }
         }
     } else {
