@@ -171,14 +171,14 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
                 // Or else error
                 else {
                     return Err(anyhow::anyhow!(
-                        "No default OSS provider configured. Use --oss-provider=provider or set oss_provider to either {LMSTUDIO_OSS_PROVIDER_ID} or {OLLAMA_OSS_PROVIDER_ID} in config.toml"
+                        "No default OSS provider configured. Use --local-provider=provider or set oss_provider to either {LMSTUDIO_OSS_PROVIDER_ID} or {OLLAMA_OSS_PROVIDER_ID} in config.toml"
                     ));
                 }
             } else if let Some(default) = &config_toml.oss_provider {
                 Some(default.clone())
             } else {
                 return Err(anyhow::anyhow!(
-                    "No default OSS provider configured. Use --oss-provider=provider or set oss_provider to either {LMSTUDIO_OSS_PROVIDER_ID} or {OLLAMA_OSS_PROVIDER_ID} in config.toml"
+                    "No default OSS provider configured. Use --local-provider=provider or set oss_provider to either {LMSTUDIO_OSS_PROVIDER_ID} or {OLLAMA_OSS_PROVIDER_ID} in config.toml"
                 ));
             }
         }

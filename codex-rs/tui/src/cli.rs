@@ -21,9 +21,9 @@ pub struct Cli {
     #[arg(long = "oss")]
     pub oss: bool,
 
-    /// Specify which OSS provider to use (lmstudio or ollama).
+    /// Specify which local provider to use (lmstudio or ollama).
     /// If not specified with --oss, will use config default or show selection.
-    #[arg(long = "oss-provider")]
+    #[arg(long = "local-provider")]
     pub oss_provider: Option<String>,
 
     /// Configuration profile from config.toml to specify default options.

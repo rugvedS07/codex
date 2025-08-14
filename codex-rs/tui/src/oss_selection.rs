@@ -124,8 +124,12 @@ impl OssSelectionWidget<'_> {
             ]));
         }
         contents.push(Line::from(""));
-        contents
-            .push(Line::from("  ● Running  ○ Not Running  ? Unknown").add_modifier(Modifier::DIM));
+        contents.push(Line::from("  ● Running  ○ Not Running").add_modifier(Modifier::DIM));
+
+        contents.push(Line::from(""));
+        contents.push(
+            Line::from("  Press Enter to select • Ctrl+C to exit").add_modifier(Modifier::DIM),
+        );
 
         let confirmation_prompt = Paragraph::new(contents).wrap(Wrap { trim: false });
 
@@ -171,6 +175,13 @@ impl OssSelectionWidget<'_> {
 
     fn handle_select_key(&mut self, key_event: KeyEvent) {
         match key_event.code {
+            KeyCode::Char('c')
+                if key_event
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.send_decision("__CANCELLED__".to_string());
+            }
             KeyCode::Left => {
                 self.selected_option = (self.selected_option + self.select_options.len() - 1)
                     % self.select_options.len();
