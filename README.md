@@ -331,8 +331,8 @@ Codex can run fully locally against an OpenAI-compatible OSS host (like LM Studi
 - Interactive UI:
   - codex --oss
 - Non-interactive (programmatic) mode (Make sure you either have a oss provider configured or pass `--local-provider`):
-  - echo "Refactor utils" | codex exec --oss # Non-interactive mode with pre-configured OSS provider
-  - echo "Refactor utils" | codex exec --oss --local-provider=lmstudio # Non-interactive mode with LM Studio
+  - echo "Refactor utils" | codex exec --oss # With pre-configured OSS provider
+  - echo "Refactor utils" | codex exec --oss --local-provider=lmstudio # With LM Studio specified
 
 You can also specify which local provider to use with the `--local-provider` flag:
 
