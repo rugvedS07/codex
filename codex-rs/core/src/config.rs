@@ -1943,6 +1943,7 @@ trust_level = "trusted"
         Ok(())
     }
 
+    #[test]
     fn test_set_default_oss_provider() -> std::io::Result<()> {
         let temp_dir = TempDir::new()?;
         let codex_home = temp_dir.path();

@@ -20,7 +20,6 @@ use codex_core::find_conversation_path_by_id_str;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
 use codex_lmstudio::DEFAULT_OSS_MODEL as LMSTUDIO_DEFAULT_OSS_MODEL;
-use codex_login::CodexAuth;
 use codex_ollama::DEFAULT_OSS_MODEL as OLLAMA_DEFAULT_OSS_MODEL;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::mcp_protocol::AuthMode;
@@ -106,9 +105,6 @@ pub async fn run_main(
             cli.approval_policy.map(Into::into),
         )
     };
-
-    // canonicalize the cwd
-    let cwd = cli.cwd.clone().map(|p| p.canonicalize().unwrap_or(p));
 
     let raw_overrides = cli.config_overrides.raw_overrides.clone();
     let overrides_cli = codex_common::CliConfigOverrides { raw_overrides };
@@ -215,7 +211,7 @@ pub async fn run_main(
         approval_policy,
         sandbox_mode,
         cwd,
-        model_provider: model_provider_override,
+        model_provider: model_provider_override.clone(),
         config_profile: cli.config_profile.clone(),
         codex_linux_sandbox_exe,
         base_instructions: None,
