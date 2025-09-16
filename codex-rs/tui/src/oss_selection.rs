@@ -318,9 +318,10 @@ pub async fn select_oss_provider(codex_home: &std::path::Path) -> io::Result<Str
         })?;
 
         if let Event::Key(key_event) = event::read()?
-            && let Some(selection) = widget.handle_key_event(key_event) {
-                break Ok(selection);
-            }
+            && let Some(selection) = widget.handle_key_event(key_event)
+        {
+            break Ok(selection);
+        }
     };
 
     disable_raw_mode()?;
@@ -329,9 +330,10 @@ pub async fn select_oss_provider(codex_home: &std::path::Path) -> io::Result<Str
     // If the user manually selected an OSS provider, we save it as the
     // default one to use later.
     if let Ok(ref provider) = result
-        && let Err(e) = set_default_oss_provider(codex_home, provider) {
-            tracing::warn!("Failed to save OSS provider preference: {e}");
-        }
+        && let Err(e) = set_default_oss_provider(codex_home, provider)
+    {
+        tracing::warn!("Failed to save OSS provider preference: {e}");
+    }
 
     result
 }
