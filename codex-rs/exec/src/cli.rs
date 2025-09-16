@@ -19,7 +19,7 @@ pub struct Cli {
     pub model: Option<String>,
 
     /// Use open-source provider.
-    #[arg(long = "oss")]
+    #[arg(long = "oss", default_value_t = false)]
     pub oss: bool,
 
     /// Specify which local provider to use (lmstudio or ollama).
