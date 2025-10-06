@@ -303,11 +303,11 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
         ),
         (
             OLLAMA_OSS_PROVIDER_ID,
-            create_oss_provider(DEFAULT_OLLAMA_PORT),
+            create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Chat),
         ),
         (
             LMSTUDIO_OSS_PROVIDER_ID,
-            create_oss_provider(DEFAULT_LMSTUDIO_PORT),
+            create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses),
         ),
     ]
     .into_iter()
@@ -315,7 +315,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
     .collect()
 }
 
-pub fn create_oss_provider(default_provider_port: u16) -> ModelProviderInfo {
+pub fn create_oss_provider(default_provider_port: u16, wire_api: WireApi) -> ModelProviderInfo {
     // These CODEX_OSS_ environment variables are experimental: we may
     // switch to reading values from config.toml instead.
     let codex_oss_base_url = match std::env::var("CODEX_OSS_BASE_URL")
@@ -332,17 +332,16 @@ pub fn create_oss_provider(default_provider_port: u16) -> ModelProviderInfo {
                 .unwrap_or(default_provider_port)
         ),
     };
-
-    create_oss_provider_with_base_url(&codex_oss_base_url)
+    create_oss_provider_with_base_url(&codex_oss_base_url, wire_api)
 }
 
-pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
+pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> ModelProviderInfo {
     ModelProviderInfo {
         name: "gpt-oss".into(),
         base_url: Some(base_url.into()),
         env_key: None,
         env_key_instructions: None,
-        wire_api: WireApi::Chat,
+        wire_api,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
