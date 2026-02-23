@@ -59,8 +59,8 @@ impl LMStudioClient {
                 Ok(())
             } else {
                 Err(io::Error::other(format!(
-                    "Server returned error: {status} {LMSTUDIO_CONNECTION_ERROR}",
-                    status = resp.status()
+                    "Server returned error: {} {LMSTUDIO_CONNECTION_ERROR}",
+                    resp.status()
                 )))
             }
         } else {
@@ -348,7 +348,7 @@ mod tests {
                 wiremock::ResponseTemplate::new(200).set_body_raw(
                     serde_json::json!({
                         "data": [
-                            {"id": "test/test-model"},
+                            {"id": "openai/gpt-oss-20b"},
                         ]
                     })
                     .to_string(),
@@ -360,7 +360,7 @@ mod tests {
 
         let client = LMStudioClient::from_host_root(server.uri());
         let models = client.fetch_models().await.expect("fetch models");
-        assert!(models.contains(&"test/test-model".to_string()));
+        assert!(models.contains(&"openai/gpt-oss-20b".to_string()));
     }
 
     #[tokio::test]
@@ -493,7 +493,7 @@ mod tests {
 
         let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
         client
-            .load_model("test/test-model")
+            .load_model("openai/gpt-oss-20b")
             .await
             .expect("load model");
     }
@@ -638,7 +638,7 @@ mod tests {
             .await;
 
         let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
-        let result = client.load_model("test/test-model").await;
+        let result = client.load_model("openai/gpt-oss-20b").await;
         assert!(result.is_err());
         assert!(
             result
@@ -693,7 +693,7 @@ mod tests {
 
         let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
         client
-            .download_model("test/test-model")
+            .download_model("openai/gpt-oss-20b")
             .await
             .expect("download model");
     }
@@ -742,7 +742,7 @@ mod tests {
             .await;
 
         let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
-        let result = client.download_model("test/test-model").await;
+        let result = client.download_model("openai/gpt-oss-20b").await;
         assert!(result.is_err());
         assert!(
             result
