@@ -9,7 +9,9 @@ pub struct LMStudioClient {
     base_url: String,
 }
 
-const LMSTUDIO_CONNECTION_ERROR: &str = "LM Studio is not responding. Install from https://lmstudio.ai/download and start the LM Studio server.";
+const LMSTUDIO_CONNECTION_ERROR: &str = "LM Studio is not responding. Install from https://lmstudio.ai/download and run 'lms server start'.";
+// 8192 tokens provides headroom above the observed ~6000 token initial input.
+const DEFAULT_CONTEXT_LENGTH: u32 = 8192;
 
 impl LMStudioClient {
     pub async fn try_from_provider(config: &Config) -> std::io::Result<Self> {
@@ -43,20 +45,13 @@ impl LMStudioClient {
         Ok(client)
     }
 
-    fn api_base_url(&self) -> String {
+    fn host_root(&self) -> String {
         let base_url = self.base_url.trim_end_matches('/');
-        let base_url = base_url
-            .strip_suffix("/api/v1")
-            .or_else(|| base_url.strip_suffix("/v1"))
-            .unwrap_or(base_url);
-        base_url.to_string()
+        base_url.strip_suffix("/v1").unwrap_or(base_url).to_string()
     }
 
     async fn check_server(&self) -> io::Result<()> {
-        let url = format!(
-            "{base_url}/models",
-            base_url = self.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/v1/models", self.host_root());
         let response = self.client.get(&url).send().await;
 
         if let Ok(resp) = response {
@@ -73,9 +68,9 @@ impl LMStudioClient {
         }
     }
 
+    // Check if a model is already loaded with the same key
     async fn is_model_loaded(&self, model: &str) -> bool {
-        let api_base_url = self.api_base_url();
-        let models_url = format!("{api_base_url}/api/v1/models");
+        let models_url = format!("{}/api/v1/models", self.host_root());
         let Ok(response) = self.client.get(&models_url).send().await else {
             return false;
         };
@@ -85,37 +80,34 @@ impl LMStudioClient {
         let Ok(json) = response.json::<serde_json::Value>().await else {
             return false;
         };
-        let models = json
-            .get("models")
-            .or_else(|| json.get("data"))
-            .and_then(|value| value.as_array());
+        let models = json.get("models").and_then(|value| value.as_array());
         models.is_some_and(|entries| {
             entries.iter().any(|entry| {
-                let key = entry
-                    .get("key")
-                    .and_then(|value| value.as_str())
-                    .or_else(|| entry.get("id").and_then(|value| value.as_str()));
                 let loaded_instances = entry
                     .get("loaded_instances")
                     .and_then(|value| value.as_array());
-                key == Some(model)
-                    && loaded_instances.is_some_and(|instances| !instances.is_empty())
+                // A model is considered loaded if any of its loaded_instances
+                // shares the same id as the requested model.
+                loaded_instances.is_some_and(|instances| {
+                    instances.iter().any(|instance| {
+                        instance.get("id").and_then(|value| value.as_str()) == Some(model)
+                    })
+                })
             })
         })
     }
 
     // Load a model by sending an empty request with max_tokens 1
     pub async fn load_model(&self, model: &str) -> io::Result<()> {
-        let api_base_url = self.api_base_url();
         if self.is_model_loaded(model).await {
             tracing::info!("Model '{model}' already loaded; reusing existing instance");
             return Ok(());
         }
-        let url = format!("{api_base_url}/api/v1/models/load");
+        let url = format!("{}/api/v1/models/load", self.host_root());
 
         let request_body = serde_json::json!({
             "model": model,
-            "context_length": 7000
+            "context_length": DEFAULT_CONTEXT_LENGTH
         });
 
         let response = self
@@ -140,10 +132,7 @@ impl LMStudioClient {
 
     // Return the list of models available on the LM Studio server.
     pub async fn fetch_models(&self) -> io::Result<Vec<String>> {
-        let url = format!(
-            "{base_url}/models",
-            base_url = self.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/v1/models", self.host_root());
         let response = self
             .client
             .get(&url)
@@ -174,8 +163,7 @@ impl LMStudioClient {
     }
 
     pub async fn download_model(&self, model: &str) -> std::io::Result<()> {
-        let api_base_url = self.api_base_url();
-        let url = format!("{api_base_url}/api/v1/models/download");
+        let url = format!("{}/api/v1/models/download", self.host_root());
 
         let request_body = serde_json::json!({
             "model": model
@@ -240,8 +228,10 @@ impl LMStudioClient {
 
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    let status_url =
-                        format!("{api_base_url}/api/v1/models/download/status/{job_id}");
+                    let status_url = format!(
+                        "{}/api/v1/models/download/status/{job_id}",
+                        self.host_root()
+                    );
 
                     let status_response = self
                         .client
@@ -353,12 +343,12 @@ mod tests {
 
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/models"))
+            .and(wiremock::matchers::path("/v1/models"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200).set_body_raw(
                     serde_json::json!({
                         "data": [
-                            {"id": "openai/gpt-oss-20b"},
+                            {"id": "test/test-model"},
                         ]
                     })
                     .to_string(),
@@ -370,7 +360,7 @@ mod tests {
 
         let client = LMStudioClient::from_host_root(server.uri());
         let models = client.fetch_models().await.expect("fetch models");
-        assert!(models.contains(&"openai/gpt-oss-20b".to_string()));
+        assert!(models.contains(&"test/test-model".to_string()));
     }
 
     #[tokio::test]
@@ -385,7 +375,7 @@ mod tests {
 
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/models"))
+            .and(wiremock::matchers::path("/v1/models"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
                     .set_body_raw(serde_json::json!({}).to_string(), "application/json"),
@@ -416,7 +406,7 @@ mod tests {
 
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/models"))
+            .and(wiremock::matchers::path("/v1/models"))
             .respond_with(wiremock::ResponseTemplate::new(500))
             .mount(&server)
             .await;
@@ -444,7 +434,7 @@ mod tests {
 
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/models"))
+            .and(wiremock::matchers::path("/v1/models"))
             .respond_with(wiremock::ResponseTemplate::new(200))
             .mount(&server)
             .await;
@@ -468,7 +458,7 @@ mod tests {
 
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/models"))
+            .and(wiremock::matchers::path("/v1/models"))
             .respond_with(wiremock::ResponseTemplate::new(404))
             .mount(&server)
             .await;
@@ -503,7 +493,7 @@ mod tests {
 
         let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
         client
-            .load_model("openai/gpt-oss-20b")
+            .load_model("test/test-model")
             .await
             .expect("load model");
     }
@@ -526,9 +516,10 @@ mod tests {
                     serde_json::json!({
                         "models": [
                             {
-                                "key": "openai/gpt-oss-20b",
+                                "key": "test/test-model",
                                 "loaded_instances": [
                                     {
+                                        "id": "test/test-model",
                                         "config": {
                                             "context_length": 7000
                                         }
@@ -550,7 +541,7 @@ mod tests {
             .await;
 
         let client = LMStudioClient::from_host_root(server.uri());
-        let result = client.load_model("openai/gpt-oss-20b").await;
+        let result = client.load_model("test/test-model").await;
         assert!(result.is_ok());
     }
 
@@ -572,9 +563,10 @@ mod tests {
                     serde_json::json!({
                         "models": [
                             {
-                                "key": "openai/gpt-oss-20b",
+                                "key": "test/test-model",
                                 "loaded_instances": [
                                     {
+                                        "id": "test/test-model",
                                         "config": {
                                             "context_length": 7000
                                         }
@@ -591,7 +583,41 @@ mod tests {
             .await;
 
         let client = LMStudioClient::from_host_root(server.uri());
-        assert!(client.is_model_loaded("openai/gpt-oss-20b").await);
+        assert!(client.is_model_loaded("test/test-model").await);
+    }
+
+    #[tokio::test]
+    async fn test_is_model_loaded_false() {
+        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+            tracing::info!(
+                "{} is set; skipping test_is_model_loaded_false",
+                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+            );
+            return;
+        }
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/v1/models"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_raw(
+                    serde_json::json!({
+                        "models": [
+                            {
+                                "key": "test/test-model",
+                                "loaded_instances": []
+                            }
+                        ]
+                    })
+                    .to_string(),
+                    "application/json",
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let client = LMStudioClient::from_host_root(server.uri());
+        assert!(!client.is_model_loaded("test/test-model").await);
     }
 
     #[tokio::test]
@@ -612,7 +638,7 @@ mod tests {
             .await;
 
         let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
-        let result = client.load_model("openai/gpt-oss-20b").await;
+        let result = client.load_model("test/test-model").await;
         assert!(result.is_err());
         assert!(
             result
@@ -667,7 +693,7 @@ mod tests {
 
         let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
         client
-            .download_model("openai/gpt-oss-20b")
+            .download_model("test/test-model")
             .await
             .expect("download model");
     }
@@ -716,7 +742,7 @@ mod tests {
             .await;
 
         let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
-        let result = client.download_model("openai/gpt-oss-20b").await;
+        let result = client.download_model("test/test-model").await;
         assert!(result.is_err());
         assert!(
             result
