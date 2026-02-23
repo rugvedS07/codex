@@ -124,8 +124,8 @@ impl LMStudioClient {
             Ok(())
         } else {
             Err(io::Error::other(format!(
-                "Failed to load model: {status}",
-                status = response.status()
+                "Failed to load model: {}",
+                response.status()
             )))
         }
     }
@@ -189,17 +189,16 @@ impl LMStudioClient {
             io::Error::new(io::ErrorKind::InvalidData, format!("JSON parse error: {e}"))
         })?;
 
-        let parse_status = |json: &serde_json::Value| -> io::Result<(
-            String,
-            Option<String>,
-            Option<u64>,
-            Option<u64>,
-        )> {
+        type DownloadStatus = (String, Option<String>, Option<u64>, Option<u64>);
+
+        let parse_status = |json: &serde_json::Value| -> io::Result<DownloadStatus> {
             let status = json["status"]
                 .as_str()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing status"))?
                 .to_string();
-            let job_id = json["job_id"].as_str().map(std::string::ToString::to_string);
+            let job_id = json["job_id"]
+                .as_str()
+                .map(std::string::ToString::to_string);
             let downloaded_bytes = json["downloaded_bytes"].as_u64();
             let total_size_bytes = json["total_size_bytes"].as_u64();
             Ok((status, job_id, downloaded_bytes, total_size_bytes))
@@ -242,8 +241,8 @@ impl LMStudioClient {
 
                     if !status_response.status().is_success() {
                         return Err(io::Error::other(format!(
-                            "Failed to fetch download status: {status}",
-                            status = status_response.status()
+                            "Failed to fetch download status: {}",
+                            status_response.status()
                         )));
                     }
 
@@ -287,10 +286,10 @@ impl LMStudioClient {
                                     >= std::time::Duration::from_millis(500)
                                 {
                                     let percent = (downloaded as f64 / total as f64) * 100.0;
-                                    let downloaded_mb = downloaded as f64 / (1024.0 * 1024.0);
-                                    let total_gb = total as f64 / (1024.0 * 1024.0 * 1024.0);
                                     eprint!(
-                                        "\rDownloading '{model}': {downloaded_mb:.2} MB / {total_gb:.2} GB ({percent:.1}%)"
+                                        "\rDownloading '{model}': {} / {} ({percent:.1}%)",
+                                        format_bytes(downloaded),
+                                        format_bytes(total)
                                     );
                                     let _ = std::io::stderr().flush();
                                     last_logged = now;
@@ -323,6 +322,21 @@ impl LMStudioClient {
             client,
             base_url: host_root.into(),
         }
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut size = bytes as f64;
+    let mut i = 0;
+    while size >= 1024.0 && i < UNITS.len() - 1 {
+        size /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{size} B")
+    } else {
+        format!("{size:.2} {}", UNITS[i])
     }
 }
 
