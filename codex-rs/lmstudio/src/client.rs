@@ -156,8 +156,8 @@ impl LMStudioClient {
             Ok(models)
         } else {
             Err(io::Error::other(format!(
-                "Failed to fetch models: {status}",
-                status = response.status()
+                "Failed to fetch models: {}",
+                response.status()
             )))
         }
     }
@@ -180,8 +180,8 @@ impl LMStudioClient {
 
         if !response.status().is_success() {
             return Err(io::Error::other(format!(
-                "Failed to download model: {status}",
-                status = response.status()
+                "Failed to download model: {}",
+                response.status()
             )));
         }
 
