@@ -1,7 +1,7 @@
 use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_core::config::Config;
 use std::io;
-use std::path::Path;
+use std::io::Write;
 
 #[derive(Clone)]
 pub struct LMStudioClient {
@@ -9,7 +9,7 @@ pub struct LMStudioClient {
     base_url: String,
 }
 
-const LMSTUDIO_CONNECTION_ERROR: &str = "LM Studio is not responding. Install from https://lmstudio.ai/download and run 'lms server start'.";
+const LMSTUDIO_CONNECTION_ERROR: &str = "LM Studio is not responding. Install from https://lmstudio.ai/download and start the LM Studio server.";
 
 impl LMStudioClient {
     pub async fn try_from_provider(config: &Config) -> std::io::Result<Self> {
@@ -43,8 +43,20 @@ impl LMStudioClient {
         Ok(client)
     }
 
+    fn api_base_url(&self) -> String {
+        let base_url = self.base_url.trim_end_matches('/');
+        let base_url = base_url
+            .strip_suffix("/api/v1")
+            .or_else(|| base_url.strip_suffix("/v1"))
+            .unwrap_or(base_url);
+        base_url.to_string()
+    }
+
     async fn check_server(&self) -> io::Result<()> {
-        let url = format!("{}/models", self.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{base_url}/models",
+            base_url = self.base_url.trim_end_matches('/')
+        );
         let response = self.client.get(&url).send().await;
 
         if let Ok(resp) = response {
@@ -52,8 +64,8 @@ impl LMStudioClient {
                 Ok(())
             } else {
                 Err(io::Error::other(format!(
-                    "Server returned error: {} {LMSTUDIO_CONNECTION_ERROR}",
-                    resp.status()
+                    "Server returned error: {status} {LMSTUDIO_CONNECTION_ERROR}",
+                    status = resp.status()
                 )))
             }
         } else {
@@ -63,12 +75,11 @@ impl LMStudioClient {
 
     // Load a model by sending an empty request with max_tokens 1
     pub async fn load_model(&self, model: &str) -> io::Result<()> {
-        let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
+        let api_base_url = self.api_base_url();
+        let url = format!("{api_base_url}/api/v1/models/load");
 
         let request_body = serde_json::json!({
-            "model": model,
-            "input": "",
-            "max_output_tokens": 1
+            "model": model
         });
 
         let response = self
@@ -85,15 +96,18 @@ impl LMStudioClient {
             Ok(())
         } else {
             Err(io::Error::other(format!(
-                "Failed to load model: {}",
-                response.status()
+                "Failed to load model: {status}",
+                status = response.status()
             )))
         }
     }
 
     // Return the list of models available on the LM Studio server.
     pub async fn fetch_models(&self) -> io::Result<Vec<String>> {
-        let url = format!("{}/models", self.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{base_url}/models",
+            base_url = self.base_url.trim_end_matches('/')
+        );
         let response = self
             .client
             .get(&url)
@@ -117,76 +131,164 @@ impl LMStudioClient {
             Ok(models)
         } else {
             Err(io::Error::other(format!(
-                "Failed to fetch models: {}",
-                response.status()
+                "Failed to fetch models: {status}",
+                status = response.status()
             )))
         }
     }
 
-    // Find lms, checking fallback paths if not in PATH
-    fn find_lms() -> std::io::Result<String> {
-        Self::find_lms_with_home_dir(None)
-    }
-
-    fn find_lms_with_home_dir(home_dir: Option<&str>) -> std::io::Result<String> {
-        // First try 'lms' in PATH
-        if which::which("lms").is_ok() {
-            return Ok("lms".to_string());
-        }
-
-        // Platform-specific fallback paths
-        let home = match home_dir {
-            Some(dir) => dir.to_string(),
-            None => {
-                #[cfg(unix)]
-                {
-                    std::env::var("HOME").unwrap_or_default()
-                }
-                #[cfg(windows)]
-                {
-                    std::env::var("USERPROFILE").unwrap_or_default()
-                }
-            }
-        };
-
-        #[cfg(unix)]
-        let fallback_path = format!("{home}/.lmstudio/bin/lms");
-
-        #[cfg(windows)]
-        let fallback_path = format!("{home}/.lmstudio/bin/lms.exe");
-
-        if Path::new(&fallback_path).exists() {
-            Ok(fallback_path)
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "LM Studio not found. Please install LM Studio from https://lmstudio.ai/",
-            ))
-        }
-    }
-
     pub async fn download_model(&self, model: &str) -> std::io::Result<()> {
-        let lms = Self::find_lms()?;
-        eprintln!("Downloading model: {model}");
+        let api_base_url = self.api_base_url();
+        let url = format!("{api_base_url}/api/v1/models/download");
 
-        let status = std::process::Command::new(&lms)
-            .args(["get", "--yes", model])
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|e| {
-                std::io::Error::other(format!("Failed to execute '{lms} get --yes {model}': {e}"))
-            })?;
+        let request_body = serde_json::json!({
+            "model": model
+        });
 
-        if !status.success() {
-            return Err(std::io::Error::other(format!(
-                "Model download failed with exit code: {}",
-                status.code().unwrap_or(-1)
+        let response = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| io::Error::other(format!("Request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            return Err(io::Error::other(format!(
+                "Failed to download model: {status}",
+                status = response.status()
             )));
         }
 
-        tracing::info!("Successfully downloaded model '{model}'");
-        Ok(())
+        let download_status = response.json::<serde_json::Value>().await.map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("JSON parse error: {e}"))
+        })?;
+
+        let parse_status = |json: &serde_json::Value| -> io::Result<(
+            String,
+            Option<String>,
+            Option<u64>,
+            Option<u64>,
+        )> {
+            let status = json["status"]
+                .as_str()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing status"))?
+                .to_string();
+            let job_id = json["job_id"].as_str().map(std::string::ToString::to_string);
+            let downloaded_bytes = json["downloaded_bytes"].as_u64();
+            let total_size_bytes = json["total_size_bytes"].as_u64();
+            Ok((status, job_id, downloaded_bytes, total_size_bytes))
+        };
+
+        let (status, job_id, _, _) = parse_status(&download_status)?;
+
+        match status.as_str() {
+            "already_downloaded" | "completed" => {
+                tracing::info!("Model '{model}' is ready");
+                Ok(())
+            }
+            "failed" => Err(io::Error::other(format!(
+                "Model download failed for '{model}'"
+            ))),
+            "paused" => Err(io::Error::other(format!(
+                "Model download paused for '{model}'"
+            ))),
+            "downloading" => {
+                let job_id = job_id.as_deref().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Download status missing job_id")
+                })?;
+
+                let mut last_logged =
+                    std::time::Instant::now() - std::time::Duration::from_secs(10);
+
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    let status_url = format!(
+                        "{api_base_url}/api/v1/models/download/status/{job_id}",
+                        api_base_url = api_base_url
+                    );
+
+                    let status_response = self
+                        .client
+                        .get(&status_url)
+                        .send()
+                        .await
+                        .map_err(|e| io::Error::other(format!("Request failed: {e}")))?;
+
+                    if !status_response.status().is_success() {
+                        return Err(io::Error::other(format!(
+                            "Failed to fetch download status: {status}",
+                            status = status_response.status()
+                        )));
+                    }
+
+                    let status =
+                        status_response
+                            .json::<serde_json::Value>()
+                            .await
+                            .map_err(|e| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!("JSON parse error: {e}"),
+                                )
+                            })?;
+                    let (status_value, _, downloaded_bytes, total_size_bytes) =
+                        parse_status(&status)?;
+
+                    match status_value.as_str() {
+                        "completed" => {
+                            eprintln!();
+                            tracing::info!("Successfully downloaded model '{model}'");
+                            return Ok(());
+                        }
+                        "failed" => {
+                            eprintln!();
+                            return Err(io::Error::other(format!(
+                                "Model download failed for '{model}'"
+                            )));
+                        }
+                        "paused" => {
+                            eprintln!();
+                            return Err(io::Error::other(format!(
+                                "Model download paused for '{model}'"
+                            )));
+                        }
+                        "downloading" => {
+                            if let (Some(downloaded), Some(total)) =
+                                (downloaded_bytes, total_size_bytes)
+                            {
+                                let now = std::time::Instant::now();
+                                if now.duration_since(last_logged)
+                                    >= std::time::Duration::from_millis(500)
+                                {
+                                    let percent = (downloaded as f64 / total as f64) * 100.0;
+                                    let downloaded_mb = downloaded as f64 / (1024.0 * 1024.0);
+                                    let total_gb = total as f64 / (1024.0 * 1024.0 * 1024.0);
+                                    eprint!(
+                                        "\rDownloading '{model}': {downloaded_mb:.2} MB / {total_gb:.2} GB ({percent:.1}%)",
+                                        downloaded_mb = downloaded_mb,
+                                        total_gb = total_gb,
+                                        percent = percent
+                                    );
+                                    let _ = std::io::stderr().flush();
+                                    last_logged = now;
+                                }
+                            }
+                        }
+                        status_value => {
+                            eprintln!();
+                            return Err(io::Error::other(format!(
+                                "Unknown download status '{status_value}' for '{model}'"
+                            )));
+                        }
+                    }
+                }
+            }
+            status_value => Err(io::Error::other(format!(
+                "Unknown download status '{status_value}' for '{model}'"
+            ))),
+        }
     }
 
     /// Low-level constructor given a raw host root, e.g. "http://localhost:1234".
@@ -351,39 +453,160 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_find_lms() {
-        let result = LMStudioClient::find_lms();
-
-        match result {
-            Ok(_) => {
-                // lms was found in PATH - that's fine
-            }
-            Err(e) => {
-                // Expected error when LM Studio not installed
-                assert!(e.to_string().contains("LM Studio not found"));
-            }
+    #[tokio::test]
+    async fn test_load_model_happy_path() {
+        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+            tracing::info!(
+                "{} is set; skipping test_load_model_happy_path",
+                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+            );
+            return;
         }
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/models/load"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
+        client
+            .load_model("openai/gpt-oss-20b")
+            .await
+            .expect("load model");
     }
 
-    #[test]
-    fn test_find_lms_with_mock_home() {
-        // Test fallback path construction without touching env vars
-        #[cfg(unix)]
-        {
-            let result = LMStudioClient::find_lms_with_home_dir(Some("/test/home"));
-            if let Err(e) = result {
-                assert!(e.to_string().contains("LM Studio not found"));
-            }
+    #[tokio::test]
+    async fn test_load_model_error() {
+        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+            tracing::info!(
+                "{} is set; skipping test_load_model_error",
+                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+            );
+            return;
         }
 
-        #[cfg(windows)]
-        {
-            let result = LMStudioClient::find_lms_with_home_dir(Some("C:\\test\\home"));
-            if let Err(e) = result {
-                assert!(e.to_string().contains("LM Studio not found"));
-            }
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/models/load"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
+        let result = client.load_model("openai/gpt-oss-20b").await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to load model: 500")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_download_model_happy_path() {
+        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+            tracing::info!(
+                "{} is set; skipping test_download_model_happy_path",
+                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+            );
+            return;
         }
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/models/download"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_raw(
+                    serde_json::json!({
+                        "job_id": "job-1",
+                        "status": "downloading"
+                    })
+                    .to_string(),
+                    "application/json",
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v1/models/download/status/job-1",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_raw(
+                    serde_json::json!({
+                        "job_id": "job-1",
+                        "status": "completed"
+                    })
+                    .to_string(),
+                    "application/json",
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
+        client
+            .download_model("openai/gpt-oss-20b")
+            .await
+            .expect("download model");
+    }
+
+    #[tokio::test]
+    async fn test_download_model_error() {
+        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+            tracing::info!(
+                "{} is set; skipping test_download_model_error",
+                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+            );
+            return;
+        }
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/models/download"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_raw(
+                    serde_json::json!({
+                        "job_id": "job-1",
+                        "status": "downloading"
+                    })
+                    .to_string(),
+                    "application/json",
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v1/models/download/status/job-1",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_raw(
+                    serde_json::json!({
+                        "job_id": "job-1",
+                        "status": "failed"
+                    })
+                    .to_string(),
+                    "application/json",
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let client = LMStudioClient::from_host_root(format!("{uri}/v1", uri = server.uri()));
+        let result = client.download_model("openai/gpt-oss-20b").await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Model download failed")
+        );
     }
 
     #[test]
