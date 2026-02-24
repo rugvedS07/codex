@@ -1,7 +1,18 @@
 use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_core::config::Config;
+use codex_core::models_manager::model_info::BASE_INSTRUCTIONS;
+use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::openai_models::ApplyPatchToolType;
+use codex_protocol::openai_models::ConfigShellToolType;
+use codex_protocol::openai_models::InputModality;
+use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelVisibility;
+use codex_protocol::openai_models::TruncationPolicyConfig;
+use serde::Deserialize;
 use std::io;
 use std::io::Write;
+use std::time::Duration;
+use std::time::Instant;
 
 #[derive(Clone)]
 pub struct LMStudioClient {
@@ -14,7 +25,7 @@ const LMSTUDIO_CONNECTION_ERROR: &str = "LM Studio is not responding. Install fr
 const DEFAULT_CONTEXT_LENGTH: u32 = 8192;
 
 impl LMStudioClient {
-    pub async fn try_from_provider(config: &Config) -> std::io::Result<Self> {
+    pub async fn try_from_provider(config: &Config) -> io::Result<Self> {
         let provider = config
             .model_providers
             .get(LMSTUDIO_OSS_PROVIDER_ID)
@@ -32,7 +43,7 @@ impl LMStudioClient {
         })?;
 
         let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(5))
+            .connect_timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -51,7 +62,7 @@ impl LMStudioClient {
     }
 
     async fn check_server(&self) -> io::Result<()> {
-        let url = format!("{}/v1/models", self.host_root());
+        let url = format!("{}/api/v1/models", self.host_root());
         let response = self.client.get(&url).send().await;
 
         if let Ok(resp) = response {
@@ -132,7 +143,7 @@ impl LMStudioClient {
 
     // Return the list of models available on the LM Studio server.
     pub async fn fetch_models(&self) -> io::Result<Vec<String>> {
-        let url = format!("{}/v1/models", self.host_root());
+        let url = format!("{}/api/v1/models", self.host_root());
         let response = self
             .client
             .get(&url)
@@ -144,14 +155,14 @@ impl LMStudioClient {
             let json: serde_json::Value = response.json().await.map_err(|e| {
                 io::Error::new(io::ErrorKind::InvalidData, format!("JSON parse error: {e}"))
             })?;
-            let models = json["data"]
+            let models = json["models"]
                 .as_array()
                 .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "No 'data' array in response")
+                    io::Error::new(io::ErrorKind::InvalidData, "No 'models' array in response")
                 })?
                 .iter()
-                .filter_map(|model| model["id"].as_str())
-                .map(std::string::ToString::to_string)
+                .filter_map(|model| model["key"].as_str())
+                .map(String::from)
                 .collect();
             Ok(models)
         } else {
@@ -162,7 +173,104 @@ impl LMStudioClient {
         }
     }
 
-    pub async fn download_model(&self, model: &str) -> std::io::Result<()> {
+    /// Return model metadata from the LM Studio server.
+    pub async fn fetch_model_metadata(&self) -> io::Result<Vec<ModelInfo>> {
+        let url = format!("{}/api/v1/models", self.host_root());
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| io::Error::other(format!("Request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            return Err(io::Error::other(format!(
+                "Failed to fetch models: {}",
+                response.status()
+            )));
+        }
+
+        let json: LMStudioModelsResponse = response.json().await.map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("JSON parse error: {e}"))
+        })?;
+
+        let models = json
+            .models
+            .into_iter()
+            .filter(|model| matches!(model.model_type.as_deref(), None | Some("llm")))
+            .enumerate()
+            .map(|(index, model)| {
+                let context_window = model
+                    .loaded_instances
+                    .as_ref()
+                    .and_then(|instances| {
+                        instances
+                            .iter()
+                            .filter_map(|instance| {
+                                instance
+                                    .config
+                                    .as_ref()
+                                    .and_then(|config| config.context_length)
+                            })
+                            .max()
+                    })
+                    .or(model.max_context_length);
+                let supports_vision = model
+                    .capabilities
+                    .as_ref()
+                    .and_then(|capabilities| capabilities.vision)
+                    .unwrap_or(false);
+                let trained_for_tool_use = model
+                    .capabilities
+                    .as_ref()
+                    .and_then(|capabilities| capabilities.trained_for_tool_use)
+                    .unwrap_or(false);
+                let input_modalities = if supports_vision {
+                    vec![InputModality::Text, InputModality::Image]
+                } else {
+                    vec![InputModality::Text]
+                };
+
+                ModelInfo {
+                    slug: model.key.clone(),
+                    display_name: model
+                        .display_name
+                        .clone()
+                        .unwrap_or_else(|| model.key.clone()),
+                    description: model.description,
+                    default_reasoning_level: None, // TODO: Update after we surface it in the API
+                    supported_reasoning_levels: Vec::new(), // TODO: Update after we surface it in the API
+                    shell_type: ConfigShellToolType::Default,
+                    visibility: ModelVisibility::List,
+                    supported_in_api: true,
+                    priority: i32::try_from(index).unwrap_or(i32::MAX),
+                    availability_nux: None,
+                    upgrade: None,
+                    base_instructions: BASE_INSTRUCTIONS.to_string(),
+                    model_messages: None,
+                    supports_reasoning_summaries: false,
+                    default_reasoning_summary: ReasoningSummary::None, // Intentional as we don't support summary
+                    support_verbosity: false,
+                    default_verbosity: None,
+                    apply_patch_tool_type: trained_for_tool_use
+                        .then_some(ApplyPatchToolType::Function),
+                    truncation_policy: TruncationPolicyConfig::bytes(10_000),
+                    supports_parallel_tool_calls: false,
+                    context_window,
+                    auto_compact_token_limit: None,
+                    effective_context_window_percent: 95,
+                    experimental_supported_tools: Vec::new(),
+                    input_modalities,
+                    prefer_websockets: false,
+                    used_fallback_model_metadata: false,
+                }
+            })
+            .collect();
+
+        Ok(models)
+    }
+
+    pub async fn download_model(&self, model: &str) -> io::Result<()> {
         let url = format!("{}/api/v1/models/download", self.host_root());
 
         let request_body = serde_json::json!({
@@ -189,22 +297,9 @@ impl LMStudioClient {
             io::Error::new(io::ErrorKind::InvalidData, format!("JSON parse error: {e}"))
         })?;
 
-        type DownloadStatus = (String, Option<String>, Option<u64>, Option<u64>);
-
-        let parse_status = |json: &serde_json::Value| -> io::Result<DownloadStatus> {
-            let status = json["status"]
-                .as_str()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing status"))?
-                .to_string();
-            let job_id = json["job_id"]
-                .as_str()
-                .map(std::string::ToString::to_string);
-            let downloaded_bytes = json["downloaded_bytes"].as_u64();
-            let total_size_bytes = json["total_size_bytes"].as_u64();
-            Ok((status, job_id, downloaded_bytes, total_size_bytes))
-        };
-
-        let (status, job_id, _, _) = parse_status(&download_status)?;
+        let initial = parse_download_status(&download_status)?;
+        let status = initial.status;
+        let job_id = initial.job_id;
 
         match status.as_str() {
             "already_downloaded" | "completed" => {
@@ -222,11 +317,18 @@ impl LMStudioClient {
                     io::Error::new(io::ErrorKind::InvalidData, "Download status missing job_id")
                 })?;
 
-                let mut last_logged =
-                    std::time::Instant::now() - std::time::Duration::from_secs(10);
+                let mut last_logged = Instant::now() - Duration::from_secs(10);
+                let mut attempts = 0u32;
 
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    tokio::time::sleep(DOWNLOAD_POLL_INTERVAL).await;
+                    attempts += 1;
+                    if attempts > MAX_DOWNLOAD_POLL_ATTEMPTS {
+                        eprintln!();
+                        return Err(io::Error::other(format!(
+                            "Timed out waiting for model '{model}' to download"
+                        )));
+                    }
                     let status_url = format!(
                         "{}/api/v1/models/download/status/{job_id}",
                         self.host_root()
@@ -256,8 +358,10 @@ impl LMStudioClient {
                                     format!("JSON parse error: {e}"),
                                 )
                             })?;
-                    let (status_value, _, downloaded_bytes, total_size_bytes) =
-                        parse_status(&status)?;
+                    let poll = parse_download_status(&status)?;
+                    let status_value = poll.status;
+                    let downloaded_bytes = poll.downloaded_bytes;
+                    let total_size_bytes = poll.total_size_bytes;
 
                     match status_value.as_str() {
                         "completed" => {
@@ -278,20 +382,23 @@ impl LMStudioClient {
                             )));
                         }
                         "downloading" => {
-                            if let (Some(downloaded), Some(total)) =
-                                (downloaded_bytes, total_size_bytes)
-                            {
-                                let now = std::time::Instant::now();
-                                if now.duration_since(last_logged)
-                                    >= std::time::Duration::from_millis(500)
-                                {
-                                    let percent = (downloaded as f64 / total as f64) * 100.0;
-                                    eprint!(
-                                        "\rDownloading '{model}': {} / {} ({percent:.1}%)",
-                                        format_bytes(downloaded),
-                                        format_bytes(total)
-                                    );
-                                    let _ = std::io::stderr().flush();
+                            if let Some(downloaded) = downloaded_bytes {
+                                let now = Instant::now();
+                                if now.duration_since(last_logged) >= Duration::from_millis(500) {
+                                    if let Some(total) = total_size_bytes {
+                                        let percent = (downloaded as f64 / total as f64) * 100.0;
+                                        eprint!(
+                                            "\rDownloading '{model}': {} / {} ({percent:.1}%)",
+                                            format_bytes(downloaded),
+                                            format_bytes(total)
+                                        );
+                                    } else {
+                                        eprint!(
+                                            "\rDownloading '{model}': {}",
+                                            format_bytes(downloaded)
+                                        );
+                                    }
+                                    let _ = io::stderr().flush();
                                     last_logged = now;
                                 }
                             }
@@ -315,7 +422,7 @@ impl LMStudioClient {
     #[cfg(test)]
     fn from_host_root(host_root: impl Into<String>) -> Self {
         let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(5))
+            .connect_timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
@@ -323,6 +430,72 @@ impl LMStudioClient {
             base_url: host_root.into(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct LMStudioModelsResponse {
+    models: Vec<LMStudioModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LMStudioModel {
+    key: String,
+    display_name: Option<String>,
+    description: Option<String>,
+    #[serde(rename = "type")]
+    model_type: Option<String>,
+    max_context_length: Option<i64>,
+    capabilities: Option<LMStudioCapabilities>,
+    loaded_instances: Option<Vec<LMStudioLoadedInstance>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LMStudioCapabilities {
+    vision: Option<bool>,
+    trained_for_tool_use: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LMStudioLoadedInstance {
+    id: Option<String>,
+    config: Option<LMStudioInstanceConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LMStudioInstanceConfig {
+    context_length: Option<i64>,
+}
+
+// Poll every 2 seconds in production; use a short interval in tests to avoid slowness.
+#[cfg(not(test))]
+const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+// Allow ~2 hours of polling (at 2s intervals) before giving up.
+const MAX_DOWNLOAD_POLL_ATTEMPTS: u32 = 3600;
+
+struct DownloadStatusResponse {
+    status: String,
+    job_id: Option<String>,
+    downloaded_bytes: Option<u64>,
+    total_size_bytes: Option<u64>,
+}
+
+fn parse_download_status(json: &serde_json::Value) -> io::Result<DownloadStatusResponse> {
+    let status = json["status"]
+        .as_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing status"))?
+        .to_string();
+    let job_id = json["job_id"].as_str().map(String::from);
+    let downloaded_bytes = json["downloaded_bytes"].as_u64();
+    let total_size_bytes = json["total_size_bytes"].as_u64();
+    Ok(DownloadStatusResponse {
+        status,
+        job_id,
+        downloaded_bytes,
+        total_size_bytes,
+    })
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -344,26 +517,30 @@ fn format_bytes(bytes: u64) -> String {
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
     use super::*;
+    use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
+    use pretty_assertions::assert_eq;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
     async fn test_fetch_models_happy_path() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_fetch_models_happy_path",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/v1/models"))
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
             .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_raw(
+                ResponseTemplate::new(200).set_body_raw(
                     serde_json::json!({
-                        "data": [
-                            {"id": "openai/gpt-oss-20b"},
-                        ]
+                        "models": [
+                            {"key": "openai/gpt-oss-20b"},
+                        ],
                     })
                     .to_string(),
                     "application/json",
@@ -379,19 +556,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_models_no_data_array() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_fetch_models_no_data_array",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/v1/models"))
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
             .respond_with(
-                wiremock::ResponseTemplate::new(200)
+                ResponseTemplate::new(200)
                     .set_body_raw(serde_json::json!({}).to_string(), "application/json"),
             )
             .mount(&server)
@@ -404,24 +581,24 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("No 'data' array in response")
+                .contains("No 'models' array in response")
         );
     }
 
     #[tokio::test]
     async fn test_fetch_models_server_error() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_fetch_models_server_error",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/v1/models"))
-            .respond_with(wiremock::ResponseTemplate::new(500))
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
+            .respond_with(ResponseTemplate::new(500))
             .mount(&server)
             .await;
 
@@ -437,19 +614,141 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_check_server_happy_path() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+    async fn test_fetch_model_metadata_filters_and_maps_fields() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
-                "{} is set; skipping test_check_server_happy_path",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                "{} is set; skipping test_fetch_model_metadata_filters_and_maps_fields",
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/v1/models"))
-            .respond_with(wiremock::ResponseTemplate::new(200))
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(
+                    serde_json::json!({
+                        "models": [
+                            {
+                                "key": "openai/gpt-oss-20b",
+                                "display_name": "GPT-OSS-20B (LM Studio)",
+                                "description": "OSS model",
+                                "type": "llm",
+                                "max_context_length": 100_000,
+                                "capabilities": {
+                                    "vision": true,
+                                    "trained_for_tool_use": true
+                                },
+                                "loaded_instances": [
+                                    {
+                                        "config": {
+                                            "context_length": 90_000
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                "key": "embed/text",
+                                "display_name": "Embedding",
+                                "type": "embedding",
+                                "max_context_length": 1024
+                            },
+                            {
+                                "key": "llm/second",
+                                "type": "llm",
+                                "max_context_length": 4096
+                            }
+                        ]
+                    })
+                    .to_string(),
+                    "application/json",
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let client = LMStudioClient::from_host_root(server.uri());
+        let models = client.fetch_model_metadata().await.expect("fetch metadata");
+
+        let expected = vec![
+            ModelInfo {
+                slug: "openai/gpt-oss-20b".to_string(),
+                display_name: "GPT-OSS-20B (LM Studio)".to_string(),
+                description: Some("OSS model".to_string()),
+                default_reasoning_level: None,
+                supported_reasoning_levels: Vec::new(),
+                shell_type: ConfigShellToolType::Default,
+                visibility: ModelVisibility::List,
+                supported_in_api: true,
+                priority: 0,
+                availability_nux: None,
+                upgrade: None,
+                base_instructions: BASE_INSTRUCTIONS.to_string(),
+                model_messages: None,
+                supports_reasoning_summaries: false,
+                default_reasoning_summary: ReasoningSummary::None,
+                support_verbosity: false,
+                default_verbosity: None,
+                apply_patch_tool_type: Some(ApplyPatchToolType::Function),
+                truncation_policy: TruncationPolicyConfig::bytes(10_000),
+                supports_parallel_tool_calls: false,
+                context_window: Some(90_000),
+                auto_compact_token_limit: None,
+                effective_context_window_percent: 95,
+                experimental_supported_tools: Vec::new(),
+                input_modalities: vec![InputModality::Text, InputModality::Image],
+                prefer_websockets: false,
+                used_fallback_model_metadata: false,
+            },
+            ModelInfo {
+                slug: "llm/second".to_string(),
+                display_name: "llm/second".to_string(),
+                description: None,
+                default_reasoning_level: None,
+                supported_reasoning_levels: Vec::new(),
+                shell_type: ConfigShellToolType::Default,
+                visibility: ModelVisibility::List,
+                supported_in_api: true,
+                priority: 1,
+                availability_nux: None,
+                upgrade: None,
+                base_instructions: BASE_INSTRUCTIONS.to_string(),
+                model_messages: None,
+                supports_reasoning_summaries: false,
+                default_reasoning_summary: ReasoningSummary::None,
+                support_verbosity: false,
+                default_verbosity: None,
+                apply_patch_tool_type: None,
+                truncation_policy: TruncationPolicyConfig::bytes(10_000),
+                supports_parallel_tool_calls: false,
+                context_window: Some(4096),
+                auto_compact_token_limit: None,
+                effective_context_window_percent: 95,
+                experimental_supported_tools: Vec::new(),
+                input_modalities: vec![InputModality::Text],
+                prefer_websockets: false,
+                used_fallback_model_metadata: false,
+            },
+        ];
+
+        assert_eq!(models, expected);
+    }
+
+    #[tokio::test]
+    async fn test_check_server_happy_path() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+            tracing::info!(
+                "{} is set; skipping test_check_server_happy_path",
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+            );
+            return;
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
+            .respond_with(ResponseTemplate::new(200))
             .mount(&server)
             .await;
 
@@ -462,18 +761,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_server_error() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_check_server_error",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/v1/models"))
-            .respond_with(wiremock::ResponseTemplate::new(404))
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
+            .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
 
@@ -490,18 +789,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_model_happy_path() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_load_model_happy_path",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/api/v1/models/load"))
-            .respond_with(wiremock::ResponseTemplate::new(200))
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                serde_json::json!({ "models": [] }).to_string(),
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/models/load"))
+            .respond_with(ResponseTemplate::new(200))
             .mount(&server)
             .await;
 
@@ -514,19 +821,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_model_reuses_loaded_instance() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_load_model_reuses_loaded_instance",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/api/v1/models"))
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
             .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_raw(
+                ResponseTemplate::new(200).set_body_raw(
                     serde_json::json!({
                         "models": [
                             {
@@ -548,9 +855,9 @@ mod tests {
             )
             .mount(&server)
             .await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/api/v1/models/load"))
-            .respond_with(wiremock::ResponseTemplate::new(500))
+        Mock::given(method("POST"))
+            .and(path("/api/v1/models/load"))
+            .respond_with(ResponseTemplate::new(500))
             .mount(&server)
             .await;
 
@@ -561,19 +868,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_model_loaded_true() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_is_model_loaded_true",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/api/v1/models"))
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
             .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_raw(
+                ResponseTemplate::new(200).set_body_raw(
                     serde_json::json!({
                         "models": [
                             {
@@ -602,19 +909,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_model_loaded_false() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_is_model_loaded_false",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/api/v1/models"))
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
             .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_raw(
+                ResponseTemplate::new(200).set_body_raw(
                     serde_json::json!({
                         "models": [
                             {
@@ -636,18 +943,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_model_error() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_load_model_error",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/api/v1/models/load"))
-            .respond_with(wiremock::ResponseTemplate::new(500))
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/models/load"))
+            .respond_with(ResponseTemplate::new(500))
             .mount(&server)
             .await;
 
@@ -664,19 +971,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_model_happy_path() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_download_model_happy_path",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/api/v1/models/download"))
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/models/download"))
             .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_raw(
+                ResponseTemplate::new(200).set_body_raw(
                     serde_json::json!({
                         "job_id": "job-1",
                         "status": "downloading"
@@ -688,12 +995,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(
-                "/api/v1/models/download/status/job-1",
-            ))
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models/download/status/job-1"))
             .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_raw(
+                ResponseTemplate::new(200).set_body_raw(
                     serde_json::json!({
                         "job_id": "job-1",
                         "status": "completed"
@@ -714,19 +1019,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_model_error() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_download_model_error",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
 
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/api/v1/models/download"))
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/models/download"))
             .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_raw(
+                ResponseTemplate::new(200).set_body_raw(
                     serde_json::json!({
                         "job_id": "job-1",
                         "status": "downloading"
@@ -738,12 +1043,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(
-                "/api/v1/models/download/status/job-1",
-            ))
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models/download/status/job-1"))
             .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_raw(
+                ResponseTemplate::new(200).set_body_raw(
                     serde_json::json!({
                         "job_id": "job-1",
                         "status": "failed"
@@ -763,6 +1066,74 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("Model download failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_download_model_already_downloaded() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+            tracing::info!(
+                "{} is set; skipping test_download_model_already_downloaded",
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+            );
+            return;
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/models/download"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(
+                    serde_json::json!({
+                        "status": "already_downloaded"
+                    })
+                    .to_string(),
+                    "application/json",
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let client = LMStudioClient::from_host_root(server.uri());
+        client
+            .download_model("openai/gpt-oss-20b")
+            .await
+            .expect("already_downloaded should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_download_model_paused() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+            tracing::info!(
+                "{} is set; skipping test_download_model_paused",
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+            );
+            return;
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/models/download"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(
+                    serde_json::json!({
+                        "status": "paused"
+                    })
+                    .to_string(),
+                    "application/json",
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let client = LMStudioClient::from_host_root(server.uri());
+        let result = client.download_model("openai/gpt-oss-20b").await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Model download paused")
         );
     }
 

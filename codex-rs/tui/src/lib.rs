@@ -44,6 +44,7 @@ use codex_protocol::protocol::RolloutLine;
 use codex_state::log_db;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_oss::ensure_oss_provider_ready;
+use codex_utils_oss::fetch_oss_model_catalog;
 use codex_utils_oss::get_default_model_for_oss_provider;
 use cwd_prompt::CwdPromptAction;
 use cwd_prompt::CwdPromptOutcome;
@@ -591,7 +592,7 @@ async fn run_ratatui_app(
         should_show_onboarding(login_status, &initial_config, should_show_trust_screen_flag);
     let mut trust_decision_was_made = false;
 
-    let config = if should_show_onboarding {
+    let mut config = if should_show_onboarding {
         let show_login_screen = should_show_login_screen(login_status, &initial_config);
         let onboarding_result = run_onboarding_app(
             OnboardingScreenArgs {
@@ -643,6 +644,19 @@ async fn run_ratatui_app(
     } else {
         initial_config
     };
+
+    if config.model_catalog.is_none() {
+        let provider_id = config.model_provider_id.as_str();
+        match fetch_oss_model_catalog(provider_id, &config).await {
+            Ok(Some(catalog)) => {
+                config.model_catalog = Some(catalog);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!("Failed to fetch OSS model catalog for {provider_id}: {err}");
+            }
+        }
+    }
 
     let mut missing_session_exit = |id_str: &str, action: &str| {
         error!("Error finding conversation path: {id_str}");

@@ -2032,11 +2032,13 @@ name = "codex-lmstudio"
 version = "0.0.0"
 dependencies = [
  "codex-core",
+ "codex-protocol",
+ "pretty_assertions",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
- "which",
  "wiremock",
 ]
 
