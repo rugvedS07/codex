@@ -95,16 +95,13 @@ impl LMStudioClient {
         let models = json.get("models").and_then(|value| value.as_array());
         models.is_some_and(|entries| {
             entries.iter().any(|entry| {
-                let loaded_instances = entry
+                let is_requested_model =
+                    entry.get("key").and_then(|value| value.as_str()) == Some(model);
+                let has_loaded_instances = entry
                     .get("loaded_instances")
-                    .and_then(|value| value.as_array());
-                // A model is considered loaded if any of its loaded_instances
-                // shares the same id as the requested model.
-                loaded_instances.is_some_and(|instances| {
-                    instances.iter().any(|instance| {
-                        instance.get("id").and_then(|value| value.as_str()) == Some(model)
-                    })
-                })
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|instances| !instances.is_empty());
+                is_requested_model && has_loaded_instances
             })
         })
     }
@@ -836,7 +833,7 @@ mod tests {
                 upgrade: None,
                 base_instructions: BASE_INSTRUCTIONS.to_string(),
                 model_messages: None,
-                supports_reasoning_summaries: true,
+                supports_reasoning_summaries: false,
                 default_reasoning_summary: ReasoningSummary::None,
                 support_verbosity: false,
                 default_verbosity: None,
@@ -1092,7 +1089,7 @@ mod tests {
                                 "key": "test/test-model",
                                 "loaded_instances": [
                                     {
-                                        "id": "test/test-model",
+                                        "id": "instance-abc123",
                                         "config": {
                                             "context_length": 7000
                                         }
@@ -1139,7 +1136,7 @@ mod tests {
                                 "key": "test/test-model",
                                 "loaded_instances": [
                                     {
-                                        "id": "test/test-model",
+                                        "id": "instance-abc123",
                                         "config": {
                                             "context_length": 7000
                                         }
