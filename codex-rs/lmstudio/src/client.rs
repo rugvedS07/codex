@@ -7,6 +7,8 @@ use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelVisibility;
+use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use serde::Deserialize;
 use std::io;
@@ -21,8 +23,7 @@ pub struct LMStudioClient {
 }
 
 const LMSTUDIO_CONNECTION_ERROR: &str = "LM Studio is not responding. Install from https://lmstudio.ai/download and run 'lms server start'.";
-// 8192 tokens provides headroom above the observed ~6000 token initial input.
-const DEFAULT_CONTEXT_LENGTH: u32 = 8192;
+const DEFAULT_CONTEXT_LENGTH: u32 = 64000;
 
 impl LMStudioClient {
     pub async fn try_from_provider(config: &Config) -> io::Result<Self> {
@@ -230,6 +231,15 @@ impl LMStudioClient {
                 } else {
                     vec![InputModality::Text]
                 };
+                let (default_reasoning_level, supported_reasoning_levels) =
+                    parse_reasoning_capability(
+                        model
+                            .capabilities
+                            .as_ref()
+                            .and_then(|capabilities| capabilities.reasoning.as_ref()),
+                    );
+                let supports_reasoning =
+                    default_reasoning_level.is_some() || !supported_reasoning_levels.is_empty();
 
                 ModelInfo {
                     slug: model.key.clone(),
@@ -238,8 +248,8 @@ impl LMStudioClient {
                         .clone()
                         .unwrap_or_else(|| model.key.clone()),
                     description: model.description,
-                    default_reasoning_level: None, // TODO: Update after we surface it in the API
-                    supported_reasoning_levels: Vec::new(), // TODO: Update after we surface it in the API
+                    default_reasoning_level,
+                    supported_reasoning_levels,
                     shell_type: ConfigShellToolType::Default,
                     visibility: ModelVisibility::List,
                     supported_in_api: true,
@@ -248,7 +258,7 @@ impl LMStudioClient {
                     upgrade: None,
                     base_instructions: BASE_INSTRUCTIONS.to_string(),
                     model_messages: None,
-                    supports_reasoning_summaries: false,
+                    supports_reasoning_summaries: supports_reasoning,
                     default_reasoning_summary: ReasoningSummary::None, // Intentional as we don't support summary
                     support_verbosity: false,
                     default_verbosity: None,
@@ -453,11 +463,25 @@ struct LMStudioModel {
 struct LMStudioCapabilities {
     vision: Option<bool>,
     trained_for_tool_use: Option<bool>,
+    reasoning: Option<LMStudioReasoningCapability>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LMStudioReasoningCapability {
+    Enabled(bool),
+    Options(LMStudioReasoningOptions),
+}
+
+#[derive(Debug, Deserialize)]
+struct LMStudioReasoningOptions {
+    allowed_options: Option<Vec<String>>,
+    #[serde(rename = "default")]
+    default_option: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LMStudioLoadedInstance {
-    id: Option<String>,
     config: Option<LMStudioInstanceConfig>,
 }
 
@@ -513,14 +537,94 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+fn parse_reasoning_effort(option: &str) -> Option<ReasoningEffort> {
+    let normalized = option.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "off" | "none" => Some(ReasoningEffort::None),
+        "on" => Some(ReasoningEffort::Medium),
+        "minimal" => Some(ReasoningEffort::Minimal),
+        "low" => Some(ReasoningEffort::Low),
+        "medium" => Some(ReasoningEffort::Medium),
+        "high" => Some(ReasoningEffort::High),
+        "xhigh" => Some(ReasoningEffort::XHigh),
+        _ => None,
+    }
+}
+
+fn parse_reasoning_capability(
+    capability: Option<&LMStudioReasoningCapability>,
+) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
+    let medium_only = (
+        Some(ReasoningEffort::Medium),
+        vec![ReasoningEffortPreset {
+            effort: ReasoningEffort::Medium,
+            description: "medium".to_string(),
+        }],
+    );
+    let fallback_presets = vec![
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+    ]
+    .into_iter()
+    .map(|effort| ReasoningEffortPreset {
+        effort,
+        description: format!("{effort}"),
+    })
+    .collect::<Vec<_>>();
+    let fallback = (Some(ReasoningEffort::Medium), fallback_presets);
+
+    let Some(capability) = capability else {
+        return (None, Vec::new());
+    };
+
+    match capability {
+        LMStudioReasoningCapability::Enabled(true) => medium_only,
+        LMStudioReasoningCapability::Enabled(false) => (None, Vec::new()),
+        LMStudioReasoningCapability::Options(options) => {
+            let mut efforts = Vec::new();
+            if let Some(allowed_options) = options.allowed_options.as_ref() {
+                for option in allowed_options {
+                    if let Some(effort) = parse_reasoning_effort(option)
+                        && !efforts.contains(&effort)
+                    {
+                        efforts.push(effort);
+                    }
+                }
+            }
+
+            if efforts.is_empty() {
+                return fallback;
+            }
+
+            let default_reasoning_level = options
+                .default_option
+                .as_deref()
+                .and_then(parse_reasoning_effort)
+                .or_else(|| efforts.first().copied());
+            let supported_reasoning_levels = efforts
+                .into_iter()
+                .map(|effort| ReasoningEffortPreset {
+                    effort,
+                    description: format!("{effort}"),
+                })
+                .collect();
+            (default_reasoning_level, supported_reasoning_levels)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
     use super::*;
     use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
     use pretty_assertions::assert_eq;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
 
     #[tokio::test]
     async fn test_fetch_models_happy_path() {
@@ -638,7 +742,11 @@ mod tests {
                                 "max_context_length": 100_000,
                                 "capabilities": {
                                     "vision": true,
-                                    "trained_for_tool_use": true
+                                    "trained_for_tool_use": true,
+                                    "reasoning": {
+                                        "allowed_options": ["low", "medium", "high"],
+                                        "default": "low"
+                                    }
                                 },
                                 "loaded_instances": [
                                     {
@@ -676,8 +784,21 @@ mod tests {
                 slug: "openai/gpt-oss-20b".to_string(),
                 display_name: "GPT-OSS-20B (LM Studio)".to_string(),
                 description: Some("OSS model".to_string()),
-                default_reasoning_level: None,
-                supported_reasoning_levels: Vec::new(),
+                default_reasoning_level: Some(ReasoningEffort::Low),
+                supported_reasoning_levels: vec![
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffort::Low,
+                        description: "low".to_string(),
+                    },
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffort::Medium,
+                        description: "medium".to_string(),
+                    },
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffort::High,
+                        description: "high".to_string(),
+                    },
+                ],
                 shell_type: ConfigShellToolType::Default,
                 visibility: ModelVisibility::List,
                 supported_in_api: true,
@@ -686,7 +807,7 @@ mod tests {
                 upgrade: None,
                 base_instructions: BASE_INSTRUCTIONS.to_string(),
                 model_messages: None,
-                supports_reasoning_summaries: false,
+                supports_reasoning_summaries: true,
                 default_reasoning_summary: ReasoningSummary::None,
                 support_verbosity: false,
                 default_verbosity: None,
@@ -715,7 +836,7 @@ mod tests {
                 upgrade: None,
                 base_instructions: BASE_INSTRUCTIONS.to_string(),
                 model_messages: None,
-                supports_reasoning_summaries: false,
+                supports_reasoning_summaries: true,
                 default_reasoning_summary: ReasoningSummary::None,
                 support_verbosity: false,
                 default_verbosity: None,
@@ -733,6 +854,137 @@ mod tests {
         ];
 
         assert_eq!(models, expected);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_model_metadata_reasoning_variants() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+            tracing::info!(
+                "{} is set; skipping test_fetch_model_metadata_reasoning_variants",
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+            );
+            return;
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(
+                    serde_json::json!({
+                        "models": [
+                            {
+                                "key": "lmstudio-community/qwen3-0.6b",
+                                "type": "llm",
+                                "capabilities": {
+                                    "vision": false,
+                                    "trained_for_tool_use": true
+                                }
+                            },
+                            {
+                                "key": "qwen/qwen3-0.6b",
+                                "type": "llm",
+                                "capabilities": {
+                                    "vision": false,
+                                    "trained_for_tool_use": true,
+                                    "reasoning": {
+                                        "allowed_options": ["off", "on"],
+                                        "default": "on"
+                                    }
+                                }
+                            },
+                            {
+                                "key": "microsoft/phi-4-mini-reasoning",
+                                "type": "llm",
+                                "capabilities": {
+                                    "vision": false,
+                                    "trained_for_tool_use": false,
+                                    "reasoning": true
+                                }
+                            },
+                            {
+                                "key": "nvidia/nemotron-3-super",
+                                "type": "llm",
+                                "capabilities": {
+                                    "vision": false,
+                                    "trained_for_tool_use": true,
+                                    "reasoning": {
+                                        "allowed_options": ["off", "low", "on"],
+                                        "default": "on"
+                                    }
+                                }
+                            },
+                            {
+                                "key": "test/missing-default",
+                                "type": "llm",
+                                "capabilities": {
+                                    "vision": false,
+                                    "trained_for_tool_use": true,
+                                    "reasoning": {
+                                        "allowed_options": ["off", "on"]
+                                    }
+                                }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                    "application/json",
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let client = LMStudioClient::from_host_root(server.uri());
+        let models = client.fetch_model_metadata().await.expect("fetch metadata");
+
+        let summary = models
+            .iter()
+            .map(|model| {
+                (
+                    model.slug.clone(),
+                    model.default_reasoning_level,
+                    model
+                        .supported_reasoning_levels
+                        .iter()
+                        .map(|preset| preset.effort)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let expected = vec![
+            (
+                "lmstudio-community/qwen3-0.6b".to_string(),
+                None,
+                Vec::<ReasoningEffort>::new(),
+            ),
+            (
+                "qwen/qwen3-0.6b".to_string(),
+                Some(ReasoningEffort::Medium),
+                vec![ReasoningEffort::None, ReasoningEffort::Medium],
+            ),
+            (
+                "microsoft/phi-4-mini-reasoning".to_string(),
+                Some(ReasoningEffort::Medium),
+                vec![ReasoningEffort::Medium],
+            ),
+            (
+                "nvidia/nemotron-3-super".to_string(),
+                Some(ReasoningEffort::Medium),
+                vec![
+                    ReasoningEffort::None,
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                ],
+            ),
+            (
+                "test/missing-default".to_string(),
+                Some(ReasoningEffort::None),
+                vec![ReasoningEffort::None, ReasoningEffort::Medium],
+            ),
+        ];
+
+        assert_eq!(summary, expected);
     }
 
     #[tokio::test]
