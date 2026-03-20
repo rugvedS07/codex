@@ -2,6 +2,7 @@ mod client;
 
 pub use client::LMStudioClient;
 use codex_core::config::Config;
+pub use codex_protocol::openai_models::ModelsResponse;
 
 /// Default OSS model to use when `--oss` is passed without an explicit `-m`.
 pub const DEFAULT_OSS_MODEL: &str = "openai/gpt-oss-20b";
@@ -31,16 +32,9 @@ pub async fn ensure_oss_ready(config: &Config) -> std::io::Result<()> {
         }
     }
 
-    // Load the model in the background
-    tokio::spawn({
-        let client = lmstudio_client.clone();
-        let model = model.to_string();
-        async move {
-            if let Err(e) = client.load_model(&model).await {
-                tracing::warn!("Failed to load model {}: {}", model, e);
-            }
-        }
-    });
+    if let Err(err) = lmstudio_client.load_model(model).await {
+        tracing::warn!("Failed to load model {model}: {err}");
+    }
 
     Ok(())
 }

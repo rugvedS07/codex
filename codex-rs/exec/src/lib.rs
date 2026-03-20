@@ -47,6 +47,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_oss::ensure_oss_provider_ready;
+use codex_utils_oss::fetch_oss_model_catalog;
 use codex_utils_oss::get_default_model_for_oss_provider;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
 use event_processor_with_jsonl_output::EventProcessorWithJsonOutput;
@@ -289,7 +290,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         additional_writable_roots: add_dir,
     };
 
-    let config = ConfigBuilder::default()
+    let mut config = ConfigBuilder::default()
         .cli_overrides(cli_kv_overrides)
         .harness_overrides(overrides)
         .cloud_requirements(cloud_requirements)
@@ -372,6 +373,20 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             .await
             .map_err(|e| anyhow::anyhow!("OSS setup failed: {e}"))?;
     }
+
+    if config.model_catalog.is_none() {
+        let provider_id = config.model_provider_id.as_str();
+        match fetch_oss_model_catalog(provider_id, &config).await {
+            Ok(Some(catalog)) => {
+                config.model_catalog = Some(catalog);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!("Failed to fetch OSS model catalog for {provider_id}: {err}");
+            }
+        }
+    }
+    let config = config;
 
     let default_cwd = config.cwd.to_path_buf();
     let default_approval_policy = config.permissions.approval_policy.value();
