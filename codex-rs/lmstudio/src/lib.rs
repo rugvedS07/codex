@@ -11,6 +11,7 @@ pub const DEFAULT_OSS_MODEL: &str = "openai/gpt-oss-20b";
 ///
 /// - Ensures a local LM Studio server is reachable.
 /// - Checks if the model exists locally and downloads it if missing.
+/// - Waits for the selected model preload to settle before returning.
 pub async fn ensure_oss_ready(config: &Config) -> std::io::Result<()> {
     let model = match config.model.as_ref() {
         Some(model) => model,
@@ -32,16 +33,11 @@ pub async fn ensure_oss_ready(config: &Config) -> std::io::Result<()> {
         }
     }
 
-    // Load the model in the background
-    tokio::spawn({
-        let client = lmstudio_client.clone();
-        let model = model.to_string();
-        async move {
-            if let Err(e) = client.load_model(&model).await {
-                tracing::warn!("Failed to load model {}: {}", model, e);
-            }
-        }
-    });
+    if let Err(err) = lmstudio_client.load_model(model).await {
+        tracing::warn!("Failed to load model {model}: {err}");
+    } else if let Err(err) = lmstudio_client.wait_until_model_loaded(model).await {
+        tracing::warn!("Failed waiting for model {model} to finish loading: {err}");
+    }
 
     Ok(())
 }

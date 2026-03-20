@@ -47,7 +47,11 @@ pub async fn fetch_oss_model_catalog(
         LMSTUDIO_OSS_PROVIDER_ID => {
             let client = codex_lmstudio::LMStudioClient::try_from_provider(config).await?;
             let models = client.fetch_model_metadata().await?;
-            Ok(Some(ModelsResponse { models }))
+            if models.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(ModelsResponse { models }))
+            }
         }
         OLLAMA_OSS_PROVIDER_ID => Ok(None),
         _ => Ok(None),

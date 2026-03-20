@@ -23,7 +23,7 @@ pub struct LMStudioClient {
 }
 
 const LMSTUDIO_CONNECTION_ERROR: &str = "LM Studio is not responding. Install from https://lmstudio.ai/download and run 'lms server start'.";
-const DEFAULT_CONTEXT_LENGTH: u32 = 64000;
+const DEFAULT_CONTEXT_LENGTH: i64 = 64000;
 
 impl LMStudioClient {
     pub async fn try_from_provider(config: &Config) -> io::Result<Self> {
@@ -80,20 +80,26 @@ impl LMStudioClient {
         }
     }
 
-    // Check if a model is already loaded with the same key
-    async fn is_model_loaded(&self, model: &str) -> bool {
+    async fn query_model_loaded(&self, model: &str) -> io::Result<bool> {
         let models_url = format!("{}/api/v1/models", self.host_root());
-        let Ok(response) = self.client.get(&models_url).send().await else {
-            return false;
-        };
+        let response = self
+            .client
+            .get(&models_url)
+            .send()
+            .await
+            .map_err(|e| io::Error::other(format!("Request failed: {e}")))?;
         if !response.status().is_success() {
-            return false;
+            return Err(io::Error::other(format!(
+                "Failed to fetch models: {}",
+                response.status()
+            )));
         }
-        let Ok(json) = response.json::<serde_json::Value>().await else {
-            return false;
-        };
+
+        let json = response.json::<serde_json::Value>().await.map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("JSON parse error: {e}"))
+        })?;
         let models = json.get("models").and_then(|value| value.as_array());
-        models.is_some_and(|entries| {
+        Ok(models.is_some_and(|entries| {
             entries.iter().any(|entry| {
                 let is_requested_model =
                     entry.get("key").and_then(|value| value.as_str()) == Some(model);
@@ -103,7 +109,28 @@ impl LMStudioClient {
                     .is_some_and(|instances| !instances.is_empty());
                 is_requested_model && has_loaded_instances
             })
-        })
+        }))
+    }
+
+    // Check if a model is already loaded with the same key
+    async fn is_model_loaded(&self, model: &str) -> bool {
+        self.query_model_loaded(model).await.unwrap_or(false)
+    }
+
+    pub(crate) async fn wait_until_model_loaded(&self, model: &str) -> io::Result<()> {
+        for attempt in 0..MAX_MODEL_LOAD_POLL_ATTEMPTS {
+            if self.query_model_loaded(model).await? {
+                return Ok(());
+            }
+            if attempt + 1 == MAX_MODEL_LOAD_POLL_ATTEMPTS {
+                break;
+            }
+            tokio::time::sleep(MODEL_LOAD_POLL_INTERVAL).await;
+        }
+
+        Err(io::Error::other(format!(
+            "Timed out waiting for model '{model}' to finish loading"
+        )))
     }
 
     // Load a model by sending an empty request with max_tokens 1
@@ -139,40 +166,7 @@ impl LMStudioClient {
         }
     }
 
-    // Return the list of models available on the LM Studio server.
-    pub async fn fetch_models(&self) -> io::Result<Vec<String>> {
-        let url = format!("{}/api/v1/models", self.host_root());
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| io::Error::other(format!("Request failed: {e}")))?;
-
-        if response.status().is_success() {
-            let json: serde_json::Value = response.json().await.map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("JSON parse error: {e}"))
-            })?;
-            let models = json["models"]
-                .as_array()
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "No 'models' array in response")
-                })?
-                .iter()
-                .filter_map(|model| model["key"].as_str())
-                .map(String::from)
-                .collect();
-            Ok(models)
-        } else {
-            Err(io::Error::other(format!(
-                "Failed to fetch models: {}",
-                response.status()
-            )))
-        }
-    }
-
-    /// Return model metadata from the LM Studio server.
-    pub async fn fetch_model_metadata(&self) -> io::Result<Vec<ModelInfo>> {
+    async fn fetch_models_response(&self) -> io::Result<LMStudioModelsResponse> {
         let url = format!("{}/api/v1/models", self.host_root());
         let response = self
             .client
@@ -188,9 +182,23 @@ impl LMStudioClient {
             )));
         }
 
-        let json: LMStudioModelsResponse = response.json().await.map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("JSON parse error: {e}"))
-        })?;
+        response
+            .json::<LMStudioModelsResponse>()
+            .await
+            .map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("JSON parse error: {e}"))
+            })
+    }
+
+    // Return the list of models available on the LM Studio server.
+    pub async fn fetch_models(&self) -> io::Result<Vec<String>> {
+        let response = self.fetch_models_response().await?;
+        Ok(response.models.into_iter().map(|m| m.key).collect())
+    }
+
+    /// Return model metadata from the LM Studio server.
+    pub async fn fetch_model_metadata(&self) -> io::Result<Vec<ModelInfo>> {
+        let json = self.fetch_models_response().await?;
 
         let models = json
             .models
@@ -213,6 +221,8 @@ impl LMStudioClient {
                             .max()
                     })
                     .or(model.max_context_length);
+                // LM Studio reports `capabilities.vision` for models that accept image input, so
+                // missing or false values are treated as text-only here.
                 let supports_vision = model
                     .capabilities
                     .as_ref()
@@ -256,7 +266,7 @@ impl LMStudioClient {
                     base_instructions: BASE_INSTRUCTIONS.to_string(),
                     model_messages: None,
                     supports_reasoning_summaries: supports_reasoning,
-                    default_reasoning_summary: ReasoningSummary::None, // Intentional as we don't support summary
+                    default_reasoning_summary: ReasoningSummary::None,
                     support_verbosity: false,
                     default_verbosity: None,
                     apply_patch_tool_type: trained_for_tool_use
@@ -493,8 +503,17 @@ const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+#[cfg(not(test))]
+const MODEL_LOAD_POLL_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const MODEL_LOAD_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 // Allow ~2 hours of polling (at 2s intervals) before giving up.
 const MAX_DOWNLOAD_POLL_ATTEMPTS: u32 = 3600;
+#[cfg(not(test))]
+const MAX_MODEL_LOAD_POLL_ATTEMPTS: u32 = 120;
+#[cfg(test)]
+const MAX_MODEL_LOAD_POLL_ATTEMPTS: u32 = 20;
 
 struct DownloadStatusResponse {
     status: String,
@@ -617,8 +636,12 @@ mod tests {
     use super::*;
     use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
     use pretty_assertions::assert_eq;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use wiremock::Mock;
     use wiremock::MockServer;
+    use wiremock::Request;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
@@ -678,12 +701,7 @@ mod tests {
         let client = LMStudioClient::from_host_root(server.uri());
         let result = client.fetch_models().await;
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("No 'models' array in response")
-        );
+        assert!(result.unwrap_err().to_string().contains("JSON parse error"));
     }
 
     #[tokio::test]
@@ -1191,6 +1209,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_wait_until_model_loaded_polls_until_loaded() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+            tracing::info!(
+                "{} is set; skipping test_wait_until_model_loaded_polls_until_loaded",
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+            );
+            return;
+        }
+
+        let server = MockServer::start().await;
+        let counter = Arc::new(AtomicUsize::new(0));
+        let request_counter = Arc::clone(&counter);
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
+            .respond_with(move |_: &Request| {
+                let loaded_instances = if request_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Vec::new()
+                } else {
+                    vec![serde_json::json!({
+                        "id": "instance-abc123",
+                        "config": {
+                            "context_length": 7000
+                        }
+                    })]
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "models": [
+                        {
+                            "key": "test/test-model",
+                            "loaded_instances": loaded_instances
+                        }
+                    ]
+                }))
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let client = LMStudioClient::from_host_root(server.uri());
+        client
+            .wait_until_model_loaded("test/test-model")
+            .await
+            .expect("wait for model load");
+    }
+
+    #[tokio::test]
+    async fn test_wait_until_model_loaded_times_out() {
+        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+            tracing::info!(
+                "{} is set; skipping test_wait_until_model_loaded_times_out",
+                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+            );
+            return;
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [
+                    {
+                        "key": "test/test-model",
+                        "loaded_instances": []
+                    }
+                ]
+            })))
+            .expect(MAX_MODEL_LOAD_POLL_ATTEMPTS as u64)
+            .mount(&server)
+            .await;
+
+        let client = LMStudioClient::from_host_root(server.uri());
+        let result = client.wait_until_model_loaded("test/test-model").await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Timed out waiting for model 'test/test-model' to finish loading")
+        );
+    }
+
+    #[tokio::test]
     async fn test_load_model_error() {
         if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
@@ -1201,6 +1302,14 @@ mod tests {
         }
 
         let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                serde_json::json!({ "models": [] }).to_string(),
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
         Mock::given(method("POST"))
             .and(path("/api/v1/models/load"))
             .respond_with(ResponseTemplate::new(500))
