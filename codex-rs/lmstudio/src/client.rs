@@ -117,22 +117,6 @@ impl LMStudioClient {
         self.query_model_loaded(model).await.unwrap_or(false)
     }
 
-    pub(crate) async fn wait_until_model_loaded(&self, model: &str) -> io::Result<()> {
-        for attempt in 0..MAX_MODEL_LOAD_POLL_ATTEMPTS {
-            if self.query_model_loaded(model).await? {
-                return Ok(());
-            }
-            if attempt + 1 == MAX_MODEL_LOAD_POLL_ATTEMPTS {
-                break;
-            }
-            tokio::time::sleep(MODEL_LOAD_POLL_INTERVAL).await;
-        }
-
-        Err(io::Error::other(format!(
-            "Timed out waiting for model '{model}' to finish loading"
-        )))
-    }
-
     // Load a model by sending an empty request with max_tokens 1
     pub async fn load_model(&self, model: &str) -> io::Result<()> {
         if self.is_model_loaded(model).await {
@@ -503,17 +487,8 @@ const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-#[cfg(not(test))]
-const MODEL_LOAD_POLL_INTERVAL: Duration = Duration::from_secs(1);
-#[cfg(test)]
-const MODEL_LOAD_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
 // Allow ~2 hours of polling (at 2s intervals) before giving up.
 const MAX_DOWNLOAD_POLL_ATTEMPTS: u32 = 3600;
-#[cfg(not(test))]
-const MAX_MODEL_LOAD_POLL_ATTEMPTS: u32 = 120;
-#[cfg(test)]
-const MAX_MODEL_LOAD_POLL_ATTEMPTS: u32 = 20;
 
 struct DownloadStatusResponse {
     status: String,
@@ -636,12 +611,8 @@ mod tests {
     use super::*;
     use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
     use pretty_assertions::assert_eq;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
     use wiremock::Mock;
     use wiremock::MockServer;
-    use wiremock::Request;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
@@ -1206,89 +1177,6 @@ mod tests {
 
         let client = LMStudioClient::from_host_root(server.uri());
         assert!(!client.is_model_loaded("test/test-model").await);
-    }
-
-    #[tokio::test]
-    async fn test_wait_until_model_loaded_polls_until_loaded() {
-        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
-            tracing::info!(
-                "{} is set; skipping test_wait_until_model_loaded_polls_until_loaded",
-                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
-            );
-            return;
-        }
-
-        let server = MockServer::start().await;
-        let counter = Arc::new(AtomicUsize::new(0));
-        let request_counter = Arc::clone(&counter);
-
-        Mock::given(method("GET"))
-            .and(path("/api/v1/models"))
-            .respond_with(move |_: &Request| {
-                let loaded_instances = if request_counter.fetch_add(1, Ordering::SeqCst) == 0 {
-                    Vec::new()
-                } else {
-                    vec![serde_json::json!({
-                        "id": "instance-abc123",
-                        "config": {
-                            "context_length": 7000
-                        }
-                    })]
-                };
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "models": [
-                        {
-                            "key": "test/test-model",
-                            "loaded_instances": loaded_instances
-                        }
-                    ]
-                }))
-            })
-            .expect(2)
-            .mount(&server)
-            .await;
-
-        let client = LMStudioClient::from_host_root(server.uri());
-        client
-            .wait_until_model_loaded("test/test-model")
-            .await
-            .expect("wait for model load");
-    }
-
-    #[tokio::test]
-    async fn test_wait_until_model_loaded_times_out() {
-        if std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
-            tracing::info!(
-                "{} is set; skipping test_wait_until_model_loaded_times_out",
-                CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
-            );
-            return;
-        }
-
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/models"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "models": [
-                    {
-                        "key": "test/test-model",
-                        "loaded_instances": []
-                    }
-                ]
-            })))
-            .expect(MAX_MODEL_LOAD_POLL_ATTEMPTS as u64)
-            .mount(&server)
-            .await;
-
-        let client = LMStudioClient::from_host_root(server.uri());
-        let result = client.wait_until_model_loaded("test/test-model").await;
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Timed out waiting for model 'test/test-model' to finish loading")
-        );
     }
 
     #[tokio::test]
